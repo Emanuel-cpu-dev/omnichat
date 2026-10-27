@@ -2,10 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import { 
   Building2, Send, Paperclip, Video, FileText, 
-  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu
+  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Copy
 } from 'lucide-react';
 
-// URL dinámica usando Vite (.env o respaldo directo a Render)
 const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
 const TOKEN_KEY = 'omnichat_token';
 
@@ -15,21 +14,22 @@ export default function App() {
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
   const [company, setCompany] = useState(JSON.parse(localStorage.getItem('company') || 'null'));
 
-  // Estados de Formulario de Autenticación
-  const [authMode, setAuthMode] = useState('EMAIL'); // EMAIL, PHONE, GOOGLE
+  // Estados de Formulario
+  const [authMode, setAuthMode] = useState('EMAIL');
   const [name, setName] = useState('');
   const [companyName, setCompanyName] = useState('');
-  const [identifier, setIdentifier] = useState(''); // Email o Teléfono
+  const [inviteCode, setInviteCode] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [selectedPlan, setSelectedPlan] = useState('STANDARD');
 
-  // Estados de Facturación / Tarjeta
+  // Facturación
   const [cardHolder, setCardHolder] = useState('');
   const [cardNumber, setCardNumber] = useState('');
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Estados del Chat y WebSockets
+  // Chat y WebSockets
   const [socket, setSocket] = useState(null);
   const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
@@ -38,15 +38,11 @@ export default function App() {
 
   const messagesEndRef = useRef(null);
 
-  // Inicializar Socket.io al autenticarse
   useEffect(() => {
     if (token && user) {
-      const newSocket = io(API_URL, {
-        auth: { token }
-      });
+      const newSocket = io(API_URL, { auth: { token } });
       setSocket(newSocket);
       
-      // Si la prueba expiró o requiere pago, redirigir a facturación
       if (company && company.access && !company.access.ok) {
         setView('BILLING');
       } else {
@@ -57,7 +53,6 @@ export default function App() {
     }
   }, [token, user]);
 
-  // Manejo de canales en tiempo real con Socket.io
   useEffect(() => {
     if (!socket || !user || view !== 'APP') return;
 
@@ -67,7 +62,6 @@ export default function App() {
       }
     });
 
-    // Cargar mensajes iniciales por API REST
     fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -98,7 +92,6 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // REGISTRO DE EMPRESA / USUARIO (Sin pedir tarjeta)
   const handleRegister = async (e) => {
     e.preventDefault();
     try {
@@ -109,7 +102,8 @@ export default function App() {
           name, 
           email: identifier.toLowerCase(), 
           password, 
-          companyName 
+          companyName: inviteCode ? undefined : companyName,
+          inviteCode: inviteCode ? inviteCode.trim().toUpperCase() : undefined
         })
       });
       const data = await res.json();
@@ -129,7 +123,6 @@ export default function App() {
     }
   };
 
-  // INICIO DE SESIÓN
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
@@ -160,7 +153,6 @@ export default function App() {
     }
   };
 
-  // ACTIVAR SUSCRIPCIÓN CON TARJETA (POST 14 DÍAS)
   const handleSubscribe = async (e) => {
     e.preventDefault();
     try {
@@ -186,7 +178,6 @@ export default function App() {
     }
   };
 
-  // ENVÍO DE MENSAJES Y ARCHIVOS
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputText.trim() && !selectedFile) return;
@@ -230,7 +221,6 @@ export default function App() {
     setView('LANDING');
   };
 
-  // 1. LANDING PAGE GLOBAL
   if (view === 'LANDING') {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
@@ -271,7 +261,6 @@ export default function App() {
     );
   }
 
-  // 2. TABLA DE PRECIOS
   if (view === 'PRICING') {
     return (
       <div className="min-h-screen bg-slate-950 text-white p-8 max-w-5xl mx-auto flex flex-col justify-center">
@@ -317,7 +306,6 @@ export default function App() {
     );
   }
 
-  // 3. REGISTRO (Sin tarjeta obligatoria)
   if (view === 'REGISTER') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -333,7 +321,20 @@ export default function App() {
 
             <div>
               <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Nombre de la Empresa</label>
-              <input type="text" required placeholder="Ej. Global Solutions S.A." value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              <input type="text" required={!inviteCode} placeholder="Ej. Global Solutions S.A." value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+
+            <div className="border-t border-b border-slate-800/80 py-3 my-1">
+              <label className="block text-xs uppercase font-bold text-indigo-400 mb-1">
+                ¿Tienes Código de Invitación?
+              </label>
+              <input 
+                type="text" 
+                placeholder="Ingresa el código si te invitaron" 
+                value={inviteCode} 
+                onChange={e => setInviteCode(e.target.value.toUpperCase())} 
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none uppercase tracking-widest font-mono" 
+              />
             </div>
 
             <div>
@@ -359,7 +360,6 @@ export default function App() {
     );
   }
 
-  // 4. LOGIN UNIVERSAL
   if (view === 'LOGIN') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -386,7 +386,6 @@ export default function App() {
     );
   }
 
-  // 5. PANTALLA DE FACTURACIÓN / ACTIVACIÓN DE TARJETA (POST 14 DÍAS)
   if (view === 'BILLING') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
@@ -429,15 +428,35 @@ export default function App() {
     );
   }
 
-  // 6. APLICACIÓN PRINCIPAL DE CHAT EMPRESARIAL
   return (
     <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
       {/* Sidebar de Canales y Empresa */}
       <div className="w-80 bg-slate-900 border-r border-slate-800 flex flex-col justify-between">
         <div>
-          <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
-            <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
-            <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">PRO TRIAL</span>
+          <div className="p-4 border-b border-slate-800 bg-slate-950/40">
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
+              <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">PRO TRIAL</span>
+            </div>
+
+            {/* MOSTRAR CÓDIGO DE INVITACIÓN */}
+            {company?.inviteCode && (
+              <div className="bg-slate-950 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between mt-2">
+                <div className="truncate pr-2">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Código Invitación</p>
+                  <p className="text-xs font-mono font-bold text-indigo-300 tracking-widest select-all">{company.inviteCode}</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    navigator.clipboard.writeText(company.inviteCode);
+                    alert('¡Código de invitación copiado al portapapeles!');
+                  }} 
+                  className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold transition flex-shrink-0"
+                >
+                  Copiar
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="p-4 space-y-1">
