@@ -263,8 +263,7 @@ app.post('/api/auth/phone/verify', authLimiter, ah(async (req, res) => {
 }));
 
 app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user), company: publicCompany(req.company, req.user) }));
-
-// Obtener miembros de la empresa
+// Obtener miembros de la empresa (Romina, Emanuel y colaboradores)
 app.get('/api/company/members', auth, requireActive, (req, res) => {
   const members = db.prepare('SELECT id, name, email, role, created_at FROM users WHERE company_id = ?').all(req.user.company_id);
   res.json(members);
