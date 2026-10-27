@@ -29,7 +29,8 @@ export default function App() {
 
   // Chat y WebSockets
   const [socket, setSocket] = useState(null);
-  const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
+  const [channels, setChannels] = useState([]);
+  const [currentChannel, setCurrentChannel] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -63,32 +64,24 @@ export default function App() {
     }
   }, [token, user]);
 
+  // Cargar canales y miembros reales de la empresa al entrar a la app
   useEffect(() => {
-    if (!socket || !user || view !== 'APP') return;
+    if (!token || view !== 'APP') return;
 
-    socket.emit('channel:join', currentChannel.id, (res) => {
-      if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
-        setView('BILLING');
-      }
-    });
-
-    // Cargar historial de mensajes
-    fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
+    // Obtener canales reales creados en la base de datos de la empresa
+    fetch(`${API_URL}/api/channels`, {
       headers: { Authorization: `Bearer ${token}` }
     })
-      .then(async (res) => {
-        if (res.status === 402) {
-          setView('BILLING');
-          return [];
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setChannels(data);
+          setCurrentChannel(data[0]); // Seleccionar el primer canal (General)
         }
-        return res.json();
-      })
-      .then((data) => {
-        if (Array.isArray(data)) setMessages(data);
       })
       .catch(() => {});
 
-    // Cargar miembros reales de la empresa con respaldo automático
+    // Obtener miembros reales de la empresa (Emanuel, Romina, etc.)
     const fetchMembers = () => {
       fetch(`${API_URL}/api/company/members`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -107,7 +100,35 @@ export default function App() {
     };
 
     fetchMembers();
-    const interval = setInterval(fetchMembers, 4000);
+    const interval = setInterval(fetchMembers, 3000); // Sincronizar miembros cada 3s
+
+    return () => clearInterval(interval);
+  }, [token, view]);
+
+  // Sintonizar socket y mensajes al cambiar de canal
+  useEffect(() => {
+    if (!socket || !currentChannel || !user || view !== 'APP') return;
+
+    socket.emit('channel:join', currentChannel.id, (res) => {
+      if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
+        setView('BILLING');
+      }
+    });
+
+    fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(async (res) => {
+        if (res.status === 402) {
+          setView('BILLING');
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) setMessages(data);
+      })
+      .catch(() => {});
 
     socket.on('message:new', (msg) => {
       if (msg.channelId === currentChannel.id) {
@@ -117,7 +138,6 @@ export default function App() {
 
     return () => {
       socket.off('message:new');
-      clearInterval(interval);
     };
   }, [socket, currentChannel, user, token, view]);
 
@@ -252,7 +272,7 @@ export default function App() {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputText.trim() && !selectedFile) return;
+    if (!inputText.trim() && !selectedFile || !currentChannel) return;
 
     if (selectedFile) {
       const formData = new FormData();
@@ -277,7 +297,7 @@ export default function App() {
       return;
     }
 
-    if (socket) {
+    if (socket && currentChannel) {
       socket.emit('message:send', { channelId: currentChannel.id, body: inputText }, (ack) => {
         if (ack && ack.error === 'SUBSCRIPTION_REQUIRED') {
           setView('BILLING');
@@ -404,12 +424,18 @@ export default function App() {
 
           <div className="p-4 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Canales de la Empresa</p>
-            <button onClick={() => setCurrentChannel({ id: 'general', name: 'General - Empresa' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'general' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># General</button>
-            <button onClick={() => setCurrentChannel({ id: 'ventas', name: 'Equipo de Ventas' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'ventas' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Ventas & Comercial</button>
-            <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Soporte & Operaciones</button>
+            {channels.map((ch) => (
+              <button 
+                key={ch.id} 
+                onClick={() => setCurrentChannel(ch)} 
+                className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel?.id === ch.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}
+              >
+                # {ch.name}
+              </button>
+            ))}
           </div>
 
-          {/* LISTA DE MIEMBROS DE LA EMPRESA */}
+          {/* LISTA DE MIEMBROS REALES DE LA EMPRESA */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
               <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
@@ -441,7 +467,7 @@ export default function App() {
       <div className="flex-1 flex flex-col bg-slate-950">
         <div className="h-16 border-b border-slate-800 px-6 flex justify-between items-center bg-slate-900/50">
           <span className="text-lg font-bold">
-            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + currentChannel.name}
+            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + (currentChannel?.name || 'General')}
           </span>
           <div className="flex items-center space-x-3">
             {user?.role === 'owner' && (
@@ -502,7 +528,7 @@ export default function App() {
                 <Paperclip className="w-5 h-5 text-slate-300" />
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
-              <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <input type="text" placeholder={`Enviar mensaje a #${currentChannel?.name || 'general'}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
               <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
             </form>
           </>
