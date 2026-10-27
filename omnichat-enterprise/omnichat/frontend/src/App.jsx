@@ -27,10 +27,9 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat, Canales y WebSockets
+  // Chat y WebSockets
   const [socket, setSocket] = useState(null);
-  const [channels, setChannels] = useState([]);
-  const [currentChannel, setCurrentChannel] = useState(null);
+  const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -64,43 +63,8 @@ export default function App() {
     }
   }, [token, user]);
 
-  // Cargar Canales y Miembros de la Empresa
   useEffect(() => {
-    if (!token || view !== 'APP') return;
-
-    // Obtener canales de la empresa
-    fetch(`${API_URL}/api/channels`, {
-      headers: { Authorization: `Bearer ${token}` }
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data) && data.length > 0) {
-          setChannels(data);
-          setCurrentChannel(data[0]); // Seleccionar el primer canal por defecto (# General)
-        }
-      })
-      .catch(() => {});
-
-    // Obtener miembros de la empresa (Romina y Emanuel)
-    const fetchMembers = () => {
-      fetch(`${API_URL}/api/company/members`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data)) setCompanyMembers(data);
-        })
-        .catch(() => {});
-    };
-
-    fetchMembers();
-    const interval = setInterval(fetchMembers, 4000);
-    return () => clearInterval(interval);
-  }, [token, view]);
-
-  // Sintonizar socket y mensajes al cambiar de canal
-  useEffect(() => {
-    if (!socket || !currentChannel || !user || view !== 'APP') return;
+    if (!socket || !user || view !== 'APP') return;
 
     socket.emit('channel:join', currentChannel.id, (res) => {
       if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
@@ -108,23 +72,52 @@ export default function App() {
       }
     });
 
+    // Cargar historial de mensajes
     fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
       headers: { Authorization: `Bearer ${token}` }
     })
-      .then(res => res.json())
-      .then(data => {
+      .then(async (res) => {
+        if (res.status === 402) {
+          setView('BILLING');
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => {
         if (Array.isArray(data)) setMessages(data);
       })
       .catch(() => {});
 
+    // Cargar miembros reales de la empresa con respaldo automático
+    const fetchMembers = () => {
+      fetch(`${API_URL}/api/company/members`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            setCompanyMembers(data);
+          } else {
+            setCompanyMembers([user]);
+          }
+        })
+        .catch(() => {
+          setCompanyMembers([user]);
+        });
+    };
+
+    fetchMembers();
+    const interval = setInterval(fetchMembers, 4000);
+
     socket.on('message:new', (msg) => {
       if (msg.channelId === currentChannel.id) {
-        setMessages(prev => [...prev, msg]);
+        setMessages((prev) => [...prev, msg]);
       }
     });
 
     return () => {
       socket.off('message:new');
+      clearInterval(interval);
     };
   }, [socket, currentChannel, user, token, view]);
 
@@ -132,7 +125,7 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Funciones AnyDesk y Videollamada
+  // Funciones AnyDesk
   const startRemoteSession = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
@@ -152,6 +145,7 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
+  // Funciones Videollamada HD
   const startVideoCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -258,7 +252,7 @@ export default function App() {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputText.trim() && !selectedFile || !currentChannel) return;
+    if (!inputText.trim() && !selectedFile) return;
 
     if (selectedFile) {
       const formData = new FormData();
@@ -410,18 +404,12 @@ export default function App() {
 
           <div className="p-4 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Canales de la Empresa</p>
-            {channels.map((ch) => (
-              <button 
-                key={ch.id} 
-                onClick={() => setCurrentChannel(ch)} 
-                className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel?.id === ch.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}
-              >
-                # {ch.name}
-              </button>
-            ))}
+            <button onClick={() => setCurrentChannel({ id: 'general', name: 'General - Empresa' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'general' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># General</button>
+            <button onClick={() => setCurrentChannel({ id: 'ventas', name: 'Equipo de Ventas' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'ventas' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Ventas & Comercial</button>
+            <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Soporte & Operaciones</button>
           </div>
 
-          {/* LISTA DE MIEMBROS REALES DE LA EMPRESA */}
+          {/* LISTA DE MIEMBROS DE LA EMPRESA */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
               <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
@@ -453,7 +441,7 @@ export default function App() {
       <div className="flex-1 flex flex-col bg-slate-950">
         <div className="h-16 border-b border-slate-800 px-6 flex justify-between items-center bg-slate-900/50">
           <span className="text-lg font-bold">
-            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + (currentChannel?.name || 'General')}
+            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + currentChannel.name}
           </span>
           <div className="flex items-center space-x-3">
             {user?.role === 'owner' && (
@@ -514,7 +502,7 @@ export default function App() {
                 <Paperclip className="w-5 h-5 text-slate-300" />
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
-              <input type="text" placeholder={`Enviar mensaje a #${currentChannel?.name || 'general'}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
               <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
             </form>
           </>
