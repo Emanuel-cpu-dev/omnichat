@@ -1,521 +1,549 @@
-/* =============================================================================
- * OmniChat Enterprise — server.js
- * Express + Socket.io + JWT + multi-tenant + suscripción 5 USD/mes (simulada)
- *
- * Aislamiento multi-tenant:
- *   1. El JWT lleva company_id (cid) y se revalida contra la BD en cada request.
- *   2. TODA consulta filtra por company_id sacado del usuario autenticado,
- *      jamás de parámetros del cliente.
- *   3. Las salas de Socket.io y de llamada incluyen el company_id.
- *   4. Los archivos se guardan en uploads/<company_id>/ y se sirven solo tras
- *      verificar que pertenecen a la empresa del solicitante.
- * ========================================================================== */
-require('dotenv').config();
-const express = require('express');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const { Server } = require('socket.io');
-const { OAuth2Client } = require('google-auth-library');
-const { z, ZodError } = require('zod');
-const db = require('./db');
+import React, { useState, useEffect, useRef } from 'react';
+import io from 'socket.io-client';
+import { 
+  Building2, Send, Paperclip, Video, FileText, 
+  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square, Camera
+} from 'lucide-react';
 
-// ---------- Configuración ----------
-const PORT = process.env.PORT || 4000;
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
-const JWT_SECRET = process.env.JWT_SECRET;
-const IS_PROD = process.env.NODE_ENV === 'production';
-const PLAN_PRICE_CENTS = Number(process.env.PLAN_PRICE_CENTS || 500);
-const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
-const MAX_UPLOAD = Number(process.env.MAX_UPLOAD_MB || 50) * 1024 * 1024;
-const DAY = 24 * 60 * 60 * 1000;
-const PERIOD_MS = 30 * DAY;
+const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
+const TOKEN_KEY = 'omnichat_token';
 
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
-  console.error('FATAL: define JWT_SECRET (>=32 caracteres) en backend/.env');
-  process.exit(1);
-}
-const googleClient = process.env.GOOGLE_CLIENT_ID ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID) : null;
-const UPLOAD_ROOT = path.join(__dirname, 'uploads');
+export default function App() {
+  const [view, setView] = useState('LANDING'); 
+  const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY) || '');
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
+  const [company, setCompany] = useState(JSON.parse(localStorage.getItem('company') || 'null'));
 
-// ---------- Utilidades ----------
-const httpErr = (status, message, code) => Object.assign(new Error(message), { status, code });
-const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-const uid = () => crypto.randomUUID();
-const hmac = (v) => crypto.createHmac('sha256', JWT_SECRET).update(v).digest('hex');
+  // Estados de Formulario
+  const [name, setName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
 
-const signToken = (user) =>
-  jwt.sign({ sub: user.id, cid: user.company_id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+  // Facturación
+  const [cardHolder, setCardHolder] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExp, setCardExp] = useState('');
+  const [cardCvc, setCardCvc] = useState('');
 
-function accessState(c) {
-  const t = Date.now();
-  if (c.status === 'trial' && c.trial_ends_at > t) return { ok: true, reason: 'trial' };
-  if ((c.status === 'active' || c.status === 'canceled') && c.current_period_end > t)
-    return { ok: true, reason: c.status };
-  return { ok: false, reason: 'expired' };
-}
+  // Chat y WebSockets
+  const [socket, setSocket] = useState(null);
+  const [channels, setChannels] = useState([
+    { id: 'general', name: 'General - Empresa' },
+    { id: 'ventas', name: 'Ventas & Comercial' },
+    { id: 'soporte', name: 'Soporte & Operaciones' }
+  ]);
+  const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [companyMembers, setCompanyMembers] = useState([]);
 
-const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role });
-const publicCompany = (c, user) => ({
-  id: c.id,
-  name: c.name,
-  status: c.status,
-  trialEndsAt: c.trial_ends_at,
-  currentPeriodEnd: c.current_period_end,
-  cardBrand: c.card_brand,
-  cardLast4: c.card_last4,
-  priceCents: PLAN_PRICE_CENTS,
-  access: accessState(c),
-  inviteCode: user.role !== 'member' ? c.invite_code : undefined,
-});
+  // Estados para Control Remoto (AnyDesk Web)
+  const [isRemoteActive, setIsRemoteActive] = useState(false);
+  const [remoteId, setRemoteId] = useState('');
+  const remoteVideoRef = useRef(null);
+  const [remoteStream, setRemoteStream] = useState(null);
 
-const getCompany = (id) => db.prepare('SELECT * FROM companies WHERE id = ?').get(id);
-const canSeeChannel = (user, ch) =>
-  !!ch && ch.company_id === user.company_id && (!ch.is_private || user.role !== 'member');
-const getChannelFor = (user, channelId) => {
-  const ch = db.prepare('SELECT * FROM channels WHERE id = ? AND company_id = ?').get(channelId, user.company_id);
-  return canSeeChannel(user, ch) ? ch : null;
-};
+  // Estados para Videollamada HD Real
+  const [isVideoCallActive, setIsVideoCallActive] = useState(false);
+  const localVideoRef = useRef(null);
+  const [localStream, setLocalStream] = useState(null);
 
-// ---------- Alta de cuentas / empresas ----------
-function createAccount({ name, email, phone, passwordHash, googleSub, companyName, inviteCode }) {
-  try {
-    return db.transaction(() => {
-      let company, role;
-      if (inviteCode) {
-        company = db.prepare('SELECT * FROM companies WHERE invite_code = ?').get(inviteCode.trim().toUpperCase());
-        if (!company) throw httpErr(404, 'Código de invitación inválido');
-        role = 'member';
-      } else if (companyName) {
-        const now = Date.now();
-        company = {
-          id: uid(),
-          name: companyName.trim(),
-          invite_code: crypto.randomBytes(5).toString('hex').toUpperCase(),
-          status: 'trial',
-          trial_ends_at: now + TRIAL_DAYS * DAY, // prueba gratuita de 14 días
-          created_at: now,
-        };
-        db.prepare(
-          `INSERT INTO companies (id,name,invite_code,status,trial_ends_at,created_at)
-           VALUES (@id,@name,@invite_code,@status,@trial_ends_at,@created_at)`
-        ).run(company);
-        const seed = db.prepare(
-          'INSERT INTO channels (id,company_id,name,department,is_private,created_at) VALUES (?,?,?,?,?,?)'
-        );
-        [
-          ['general', 'General', 0],
-          ['ventas', 'Ventas', 0],
-          ['soporte', 'Soporte', 0],
-          ['gerencia', 'Gerencia', 1],
-        ].forEach(([n, d, p]) => seed.run(uid(), company.id, n, d, p, now));
-        role = 'owner';
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    if (token && user) {
+      const newSocket = io(API_URL, { auth: { token } });
+      setSocket(newSocket);
+      
+      if (company && company.access && !company.access.ok) {
+        setView('BILLING');
       } else {
-        throw httpErr(400, 'Indica el nombre de tu empresa o un código de invitación', 'NEEDS_SETUP');
+        setView('APP');
       }
-      const user = {
-        id: uid(), company_id: company.id, name: name.trim(), email: email || null, phone: phone || null,
-        password_hash: passwordHash || null, google_sub: googleSub || null, role, created_at: Date.now(),
-      };
-      db.prepare(
-        `INSERT INTO users (id,company_id,name,email,phone,password_hash,google_sub,role,created_at)
-         VALUES (@id,@company_id,@name,@email,@phone,@password_hash,@google_sub,@role,@created_at)`
-      ).run(user);
-      return user;
-    })();
-  } catch (e) {
-    if (String(e.code).startsWith('SQLITE_CONSTRAINT')) throw httpErr(409, 'Ese correo o teléfono ya está registrado');
-    throw e;
-  }
-}
 
-const authResponse = (user) => ({
-  token: signToken(user),
-  user: publicUser(user),
-  company: publicCompany(getCompany(user.company_id), user),
-});
+      return () => newSocket.close();
+    }
+  }, [token, user]);
 
-// ---------- App ----------
-const app = express();
-const server = http.createServer(app);
-app.set('trust proxy', 1);
-app.use(helmet());
-app.use(cors({ origin: CLIENT_URL }));
-app.use(express.json({ limit: '100kb' }));
+  // Cargar canales del servidor y miembros reales de la empresa
+  useEffect(() => {
+    if (!token || view !== 'APP') return;
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
-const otpLimiter = rateLimit({ windowMs: 10 * 60 * 1000, limit: 5, standardHeaders: true, legacyHeaders: false });
+    fetch(`${API_URL}/api/channels`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          const mapped = data.map(ch => ({ id: ch.id, name: ch.name }));
+          setChannels(mapped);
+        }
+      })
+      .catch(() => {});
 
-// ---------- Middleware de auth / suscripción ----------
-function auth(req, res, next) {
-  const h = req.headers.authorization || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'No autenticado' });
-  try {
-    const p = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ?').get(p.sub, p.cid);
-    if (!user) throw new Error('usuario inexistente');
-    req.user = user;
-    req.company = getCompany(user.company_id);
-    next();
-  } catch {
-    res.status(401).json({ error: 'Sesión inválida o expirada' });
-  }
-}
-function requireActive(req, res, next) {
-  if (!accessState(req.company).ok)
-    return res.status(402).json({
-      error: 'Tu prueba gratuita terminó. Activa la suscripción para continuar.',
-      code: 'SUBSCRIPTION_REQUIRED',
+    const fetchMembers = () => {
+      fetch(`${API_URL}/api/company/members`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            setCompanyMembers(data);
+          } else {
+            setCompanyMembers([user]);
+          }
+        })
+        .catch(() => {
+          setCompanyMembers([user]);
+        });
+    };
+
+    fetchMembers();
+    const interval = setInterval(fetchMembers, 3000);
+    return () => clearInterval(interval);
+  }, [token, view]);
+
+  // Sintonizar socket y mensajes al cambiar de canal
+  useEffect(() => {
+    if (!socket || !currentChannel || !user || view !== 'APP') return;
+
+    socket.emit('channel:join', currentChannel.id, (res) => {
+      if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
+        setView('BILLING');
+      }
     });
-  next();
-}
-const requireRole = (...roles) => (req, res, next) =>
-  roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'Permisos insuficientes' });
 
-// ---------- Autenticación ----------
-const pwSchema = z.string().min(8, 'La contraseña debe tener al menos 8 caracteres').max(100);
-const setupFields = { companyName: z.string().min(2).max(80).optional(), inviteCode: z.string().max(20).optional() };
+    fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(async (res) => {
+        if (res.status === 402) {
+          setView('BILLING');
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) setMessages(data);
+      })
+      .catch(() => {});
 
-app.post('/api/auth/register', authLimiter, ah(async (req, res) => {
-  const b = z.object({
-    name: z.string().min(2).max(80), email: z.string().email().toLowerCase(), password: pwSchema, ...setupFields,
-  }).parse(req.body);
-  const user = createAccount({ ...b, passwordHash: await bcrypt.hash(b.password, 12) });
-  res.status(201).json(authResponse(user));
-}));
-
-app.post('/api/auth/login', authLimiter, ah(async (req, res) => {
-  const b = z.object({ email: z.string().email().toLowerCase(), password: z.string().min(1).max(100) }).parse(req.body);
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(b.email);
-  // bcrypt.compare siempre se ejecuta para no filtrar si el correo existe (timing)
-  const ok = await bcrypt.compare(b.password, user?.password_hash || '$2a$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidi');
-  if (!user || !ok) throw httpErr(401, 'Correo o contraseña incorrectos');
-  res.json(authResponse(user));
-}));
-
-app.post('/api/auth/google', authLimiter, ah(async (req, res) => {
-  if (!googleClient) throw httpErr(503, 'Google OAuth no está configurado (GOOGLE_CLIENT_ID)');
-  const b = z.object({ idToken: z.string().min(10), ...setupFields }).parse(req.body);
-  const ticket = await googleClient.verifyIdToken({ idToken: b.idToken, audience: process.env.GOOGLE_CLIENT_ID });
-  const g = ticket.getPayload();
-  if (!g?.email || !g.email_verified) throw httpErr(401, 'Tu cuenta de Google no tiene un correo verificado');
-  let user = db.prepare('SELECT * FROM users WHERE google_sub = ? OR email = ?').get(g.sub, g.email.toLowerCase());
-  if (user && !user.google_sub) {
-    db.prepare('UPDATE users SET google_sub = ? WHERE id = ?').run(g.sub, user.id);
-    user.google_sub = g.sub;
-  }
-  if (!user) {
-    if (!b.companyName && !b.inviteCode)
-      throw httpErr(404, 'Cuenta nueva: indica tu empresa o un código de invitación', 'NEEDS_SETUP');
-    user = createAccount({
-      name: g.name || g.email, email: g.email.toLowerCase(), googleSub: g.sub,
-      companyName: b.companyName, inviteCode: b.inviteCode,
+    socket.on('message:new', (msg) => {
+      if (msg.channelId === currentChannel.id) {
+        setMessages((prev) => [...prev, msg]);
+      }
     });
-  }
-  res.json(authResponse(user));
-}));
 
-const phoneSchema = z.string().regex(/^\+[1-9]\d{7,14}$/, 'Usa formato internacional, ej. +5493511234567');
+    return () => {
+      socket.off('message:new');
+    };
+  }, [socket, currentChannel, user, token, view]);
 
-async function sendSms(phone, text) {
-  // Integra aquí Twilio / AWS SNS / Vonage. Ej. Twilio: client.messages.create({to: phone, from, body: text})
-  if (!IS_PROD) console.log(`[SMS simulado] ${phone}: ${text}`);
-}
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-app.post('/api/auth/phone/request', otpLimiter, ah(async (req, res) => {
-  const { phone } = z.object({ phone: phoneSchema }).parse(req.body);
-  const code = String(crypto.randomInt(100000, 1000000));
-  db.prepare(
-    `INSERT INTO otps (phone, code_hash, expires_at, attempts) VALUES (?,?,?,0)
-     ON CONFLICT(phone) DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, attempts=0`
-  ).run(phone, hmac(`${phone}:${code}`), Date.now() + 5 * 60 * 1000);
-  await sendSms(phone, `Tu código de OmniChat es ${code}. Vence en 5 minutos.`);
-  res.json({ sent: true, ...(IS_PROD ? {} : { devCode: code }) }); // devCode SOLO en desarrollo
-}));
-
-app.post('/api/auth/phone/verify', authLimiter, ah(async (req, res) => {
-  const b = z.object({
-    phone: phoneSchema, code: z.string().regex(/^\d{6}$/), name: z.string().min(2).max(80).optional(), ...setupFields,
-  }).parse(req.body);
-  const row = db.prepare('SELECT * FROM otps WHERE phone = ?').get(b.phone);
-  if (!row || row.expires_at < Date.now() || row.attempts >= 5) throw httpErr(401, 'Código vencido. Solicita uno nuevo.');
-  const good = crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(hmac(`${b.phone}:${b.code}`)));
-  if (!good) {
-    db.prepare('UPDATE otps SET attempts = attempts + 1 WHERE phone = ?').run(b.phone);
-    throw httpErr(401, 'Código incorrecto');
-  }
-  let user = db.prepare('SELECT * FROM users WHERE phone = ?').get(b.phone);
-  if (!user) {
-    if (!b.name || (!b.companyName && !b.inviteCode))
-      throw httpErr(404, 'Cuenta nueva: completa tu nombre y empresa', 'NEEDS_SETUP');
-    user = createAccount({ name: b.name, phone: b.phone, companyName: b.companyName, inviteCode: b.inviteCode });
-  }
-  db.prepare('DELETE FROM otps WHERE phone = ?').run(b.phone);
-  res.json(authResponse(user));
-}));
-
-app.get('/api/me', auth, (req, res) => res.json({ user: publicUser(req.user), company: publicCompany(req.company, req.user) }));
-// Obtener miembros de la empresa (Romina, Emanuel y colaboradores)
-app.get('/api/company/members', auth, requireActive, (req, res) => {
-  const members = db.prepare('SELECT id, name, email, role, created_at FROM users WHERE company_id = ?').all(req.user.company_id);
-  res.json(members);
-});
-
-// ---------- Facturación (pasarela simulada tipo Stripe) ----------
-// IMPORTANTE: el número de tarjeta NUNCA se guarda; solo marca y últimos 4 dígitos.
-// En producción reemplaza esto por Stripe Checkout / Elements (la tarjeta va directo a Stripe, no a tu servidor)
-// y escucha los webhooks invoice.paid / invoice.payment_failed para actualizar el estado.
-const luhn = (n) => {
-  let s = 0, alt = false;
-  for (let i = n.length - 1; i >= 0; i--) {
-    let d = +n[i];
-    if (alt && (d *= 2) > 9) d -= 9;
-    s += d; alt = !alt;
-  }
-  return s % 10 === 0;
-};
-const brandOf = (n) => (/^4/.test(n) ? 'Visa' : /^(5[1-5]|2[2-7])/.test(n) ? 'Mastercard' : /^3[47]/.test(n) ? 'Amex' : 'Tarjeta');
-
-app.get('/api/billing/status', auth, (req, res) => {
-  const payments = db.prepare(
-    'SELECT id, amount_cents, currency, status, created_at FROM payments WHERE company_id = ? ORDER BY created_at DESC LIMIT 12'
-  ).all(req.user.company_id);
-  res.json({ company: publicCompany(req.company, req.user), payments });
-});
-
-app.post('/api/billing/subscribe', auth, requireRole('owner'), ah(async (req, res) => {
-  const b = z.object({
-    holder: z.string().min(2).max(80),
-    cardNumber: z.string().transform((s) => s.replace(/\s|-/g, '')).pipe(z.string().regex(/^\d{13,19}$/)),
-    exp: z.string().regex(/^(0[1-9]|1[0-2])\/\d{2}$/),
-    cvc: z.string().regex(/^\d{3,4}$/),
-  }).parse(req.body);
-
-  const [mm, yy] = b.exp.split('/').map(Number);
-  if (new Date(2000 + yy, mm, 0, 23, 59, 59) < new Date()) throw httpErr(400, 'La tarjeta está vencida');
-  const record = (status) =>
-    db.prepare('INSERT INTO payments (id,company_id,amount_cents,currency,status,created_at) VALUES (?,?,?,?,?,?)')
-      .run(uid(), req.user.company_id, PLAN_PRICE_CENTS, 'usd', status, Date.now());
-
-  // Tarjetas de prueba: 4242 4242 4242 4242 (ok) · 4000 0000 0000 0002 (rechazada) · 4000 0000 0000 9995 (falla en la renovación)
-  if (!luhn(b.cardNumber) || b.cardNumber === '4000000000000002') {
-    record('failed');
-    throw httpErr(402, 'La tarjeta fue rechazada. Prueba con otra.');
-  }
-  const now = Date.now();
-  const base = req.company.current_period_end > now ? req.company.current_period_end : now;
-  db.prepare(
-    `UPDATE companies SET status='active', current_period_end=?, card_brand=?, card_last4=? WHERE id=?`
-  ).run(base + PERIOD_MS, brandOf(b.cardNumber), b.cardNumber.slice(-4), req.user.company_id);
-  record('succeeded');
-  res.json({ company: publicCompany(getCompany(req.user.company_id), req.user) });
-}));
-
-app.post('/api/billing/cancel', auth, requireRole('owner'), (req, res) => {
-  db.prepare(`UPDATE companies SET status='canceled' WHERE id=? AND status='active'`).run(req.user.company_id);
-  res.json({ company: publicCompany(getCompany(req.user.company_id), req.user) });
-});
-
-// Renovación mensual recurrente (en producción: la hace Stripe Billing).
-function runRenewals() {
-  const due = db.prepare(`SELECT * FROM companies WHERE status='active' AND current_period_end <= ?`).all(Date.now());
-  for (const c of due) {
-    const fails = c.card_last4 === '9995';
-    db.prepare('INSERT INTO payments (id,company_id,amount_cents,currency,status,created_at) VALUES (?,?,?,?,?,?)')
-      .run(uid(), c.id, PLAN_PRICE_CENTS, 'usd', fails ? 'failed' : 'succeeded', Date.now());
-    if (fails) db.prepare(`UPDATE companies SET status='past_due' WHERE id=?`).run(c.id);
-    else db.prepare('UPDATE companies SET current_period_end=? WHERE id=?').run(c.current_period_end + PERIOD_MS, c.id);
-  }
-}
-setInterval(runRenewals, 60 * 60 * 1000).unref();
-runRenewals();
-
-// ---------- Canales y mensajes ----------
-app.get('/api/channels', auth, requireActive, (req, res) => {
-  const rows = db.prepare('SELECT id,name,department,is_private FROM channels WHERE company_id = ? ORDER BY department, name')
-    .all(req.user.company_id);
-  res.json(rows.filter((c) => !c.is_private || req.user.role !== 'member'));
-});
-
-app.post('/api/channels', auth, requireActive, requireRole('owner', 'admin'), ah(async (req, res) => {
-  const b = z.object({
-    name: z.string().min(2).max(40).transform((s) => s.toLowerCase().replace(/[^a-z0-9áéíóúñ-]+/g, '-')),
-    department: z.string().min(2).max(40), isPrivate: z.boolean().optional(),
-  }).parse(req.body);
-  try {
-    const ch = { id: uid(), name: b.name, department: b.department.trim(), is_private: b.isPrivate ? 1 : 0 };
-    db.prepare('INSERT INTO channels (id,company_id,name,department,is_private,created_by,created_at) VALUES (?,?,?,?,?,?,?)')
-      .run(ch.id, req.user.company_id, ch.name, ch.department, ch.is_private, req.user.id, Date.now());
-    io.to(`t:${req.user.company_id}`).emit('channel:created', ch);
-    res.status(201).json(ch);
-  } catch (e) {
-    if (String(e.code).startsWith('SQLITE_CONSTRAINT')) throw httpErr(409, 'Ya existe un canal con ese nombre');
-    throw e;
-  }
-}));
-
-const MSG_SQL = `SELECT m.id, m.channel_id, m.body, m.created_at, m.user_id, u.name AS user_name,
-  f.id AS file_id, f.original_name, f.size, f.mime
-  FROM messages m JOIN users u ON u.id = m.user_id LEFT JOIN files f ON f.id = m.file_id`;
-const toMsg = (r) => ({
-  id: r.id, channelId: r.channel_id, body: r.body, createdAt: r.created_at, userId: r.user_id, userName: r.user_name,
-  file: r.file_id ? { id: r.file_id, name: r.original_name, size: r.size, mime: r.mime } : null,
-});
-
-function saveMessage({ companyId, channelId, userId, body, fileId = null }) {
-  const id = uid();
-  db.prepare('INSERT INTO messages (id,company_id,channel_id,user_id,body,file_id,created_at) VALUES (?,?,?,?,?,?,?)')
-    .run(id, companyId, channelId, userId, body, fileId, Date.now());
-  return toMsg(db.prepare(`${MSG_SQL} WHERE m.id = ? AND m.company_id = ?`).get(id, companyId));
-}
-
-app.get('/api/channels/:id/messages', auth, requireActive, (req, res) => {
-  if (!getChannelFor(req.user, req.params.id)) return res.status(404).json({ error: 'Canal no encontrado' });
-  const before = Number(req.query.before) || Date.now() + 1;
-  const rows = db.prepare(`${MSG_SQL} WHERE m.company_id = ? AND m.channel_id = ? AND m.created_at < ?
-    ORDER BY m.created_at DESC LIMIT 50`).all(req.user.company_id, req.params.id, before);
-  res.json(rows.reverse().map(toMsg));
-});
-
-// ---------- Archivos ----------
-const ALLOWED_EXT = new Set([
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.rtf', '.odt', '.ods',
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.rar', '.7z', '.tar', '.gz',
-]);
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => {
-      const dir = path.join(UPLOAD_ROOT, req.user.company_id); // carpeta por empresa
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + path.extname(file.originalname).toLowerCase()),
-  }),
-  limits: { fileSize: MAX_UPLOAD, files: 1 },
-  fileFilter: (req, file, cb) =>
-    ALLOWED_EXT.has(path.extname(file.originalname).toLowerCase()) ? cb(null, true) : cb(httpErr(415, 'Tipo de archivo no permitido')),
-});
-
-app.post('/api/channels/:id/files', auth, requireActive,
-  (req, res, next) => (getChannelFor(req.user, req.params.id) ? next() : res.status(404).json({ error: 'Canal no encontrado' })),
-  upload.single('file'),
-  ah(async (req, res) => {
-    if (!req.file) throw httpErr(400, 'Falta el archivo');
-    const fileId = uid();
-    const original = Buffer.from(req.file.originalname, 'latin1').toString('utf8').slice(0, 200);
-    db.prepare('INSERT INTO files (id,company_id,channel_id,user_id,original_name,stored_name,mime,size,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(fileId, req.user.company_id, req.params.id, req.user.id, original, req.file.filename, req.file.mimetype, req.file.size, Date.now());
-    const msg = saveMessage({
-      companyId: req.user.company_id, channelId: req.params.id, userId: req.user.id,
-      body: String(req.body?.body || '').slice(0, 4000), fileId,
-    });
-    io.to(`t:${req.user.company_id}:c:${req.params.id}`).emit('message:new', msg);
-    res.status(201).json(msg);
-  }));
-
-app.get('/api/files/:id/download', auth, requireActive, (req, res) => {
-  const f = db.prepare('SELECT * FROM files WHERE id = ? AND company_id = ?').get(req.params.id, req.user.company_id);
-  if (!f || !getChannelFor(req.user, f.channel_id)) return res.status(404).json({ error: 'Archivo no encontrado' });
-  const full = path.join(UPLOAD_ROOT, f.company_id, path.basename(f.stored_name));
-  if (!fs.existsSync(full)) return res.status(404).json({ error: 'Archivo no disponible' });
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.download(full, f.original_name);
-});
-
-// ---------- Socket.io: chat en tiempo real + señalización WebRTC ----------
-const io = new Server(server, { cors: { origin: CLIENT_URL }, maxHttpBufferSize: 1e5 });
-
-io.use((socket, next) => {
-  try {
-    const p = jwt.verify(socket.handshake.auth?.token, JWT_SECRET);
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ?').get(p.sub, p.cid);
-    if (!user) throw new Error();
-    socket.data.user = user;
-    socket.join(`t:${user.company_id}`); // sala de toda la empresa
-    next();
-  } catch {
-    next(new Error('unauthorized'));
-  }
-});
-
-io.on('connection', (socket) => {
-  const user = socket.data.user;
-  const active = () => accessState(getCompany(user.company_id)).ok;
-  const reply = (ack, payload) => typeof ack === 'function' && ack(payload);
-
-  socket.on('channel:join', (channelId, ack) => {
-    if (!active()) return reply(ack, { error: 'SUBSCRIPTION_REQUIRED' });
-    if (!getChannelFor(user, channelId)) return reply(ack, { error: 'Canal no encontrado' });
-    socket.join(`t:${user.company_id}:c:${channelId}`);
-    reply(ack, { ok: true });
-  });
-
-  socket.on('message:send', (data, ack) => {
-    const parsed = z.object({ channelId: z.string().uuid(), body: z.string().trim().min(1).max(4000) }).safeParse(data);
-    if (!parsed.success) return reply(ack, { error: 'Mensaje inválido' });
-    if (!active()) return reply(ack, { error: 'SUBSCRIPTION_REQUIRED' });
-    if (!getChannelFor(user, parsed.data.channelId)) return reply(ack, { error: 'Canal no encontrado' });
-    const msg = saveMessage({ companyId: user.company_id, channelId: parsed.data.channelId, userId: user.id, body: parsed.data.body });
-    io.to(`t:${user.company_id}:c:${msg.channelId}`).emit('message:new', msg);
-    reply(ack, { ok: true });
-  });
-
-  socket.on('typing', (channelId) => {
-    if (typeof channelId === 'string' && socket.rooms.has(`t:${user.company_id}:c:${channelId}`))
-      socket.to(`t:${user.company_id}:c:${channelId}`).emit('typing', { channelId, userName: user.name });
-  });
-
-  // ----- Videollamadas / soporte remoto (malla P2P WebRTC; el servidor solo retransmite señales) -----
-  const leaveCall = () => {
-    const room = socket.data.callRoom;
-    if (!room) return;
-    socket.leave(room);
-    socket.to(room).emit('call:peer-left', socket.id);
-    socket.data.callRoom = null;
+  const startRemoteSession = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      setRemoteStream(stream);
+      setIsRemoteActive(true);
+      setIsVideoCallActive(false);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+      setRemoteId(Math.floor(100000000 + Math.random() * 900000000).toString());
+    } catch (err) {
+      alert('No se pudo iniciar la compartición de pantalla.');
+    }
   };
 
-  socket.on('call:join', ({ channelId } = {}, ack) => {
-    if (!active()) return reply(ack, { error: 'SUBSCRIPTION_REQUIRED' });
-    if (!getChannelFor(user, channelId)) return reply(ack, { error: 'Canal no encontrado' });
-    leaveCall();
-    const room = `call:${user.company_id}:${channelId}`;
-    const peers = [...(io.sockets.adapter.rooms.get(room) || [])].map((id) => ({
-      id, name: io.sockets.sockets.get(id)?.data.user.name || 'Participante',
-    }));
-    if (peers.length >= 8) return reply(ack, { error: 'La sala está llena (máx. 8 participantes en malla P2P)' });
-    socket.join(room);
-    socket.data.callRoom = room;
-    if (!peers.length) socket.to(`t:${user.company_id}:c:${channelId}`).emit('call:started', { channelId, by: user.name });
-    reply(ack, { peers });
-  });
+  const stopRemoteSession = () => {
+    if (remoteStream) remoteStream.getTracks().forEach(t => t.stop());
+    setRemoteStream(null);
+    setIsRemoteActive(false);
+  };
 
-  socket.on('call:signal', ({ to, data } = {}) => {
-    const target = io.sockets.sockets.get(to);
-    if (!socket.data.callRoom || !target || target.data.callRoom !== socket.data.callRoom) return; // misma sala = misma empresa
-    target.emit('call:signal', { from: socket.id, name: user.name, data });
-  });
+  const startVideoCall = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      setIsVideoCallActive(true);
+      setIsRemoteActive(false);
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    } catch (err) {
+      alert('No se pudo acceder a la cámara o micrófono.');
+    }
+  };
 
-  socket.on('call:leave', leaveCall);
-  socket.on('disconnect', leaveCall);
-});
+  const stopVideoCall = () => {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    setLocalStream(null);
+    setIsVideoCallActive(false);
+  };
 
-// ---------- Errores ----------
-app.use('/api', (req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));
-app.use((err, req, res, next) => {
-  if (err instanceof ZodError) return res.status(400).json({ error: err.issues[0]?.message || 'Datos inválidos', code: 'VALIDATION' });
-  if (err instanceof multer.MulterError)
-    return res.status(413).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera el límite permitido' : err.message });
-  if (err.status) return res.status(err.status).json({ error: err.message, code: err.code });
-  console.error(err);
-  res.status(500).json({ error: 'Error interno del servidor' });
-});
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          name, 
+          email: identifier.toLowerCase().trim(), 
+          password, 
+          companyName: inviteCode ? undefined : companyName,
+          inviteCode: inviteCode ? inviteCode.trim().toUpperCase() : undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setToken(data.token);
+        setUser(data.user);
+        setCompany(data.company);
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('company', JSON.stringify(data.company));
+        setView('APP');
+      } else {
+        alert(data.error || 'Error en el registro.');
+      }
+    } catch (err) {
+      alert('No se pudo conectar con el servidor.');
+    }
+  };
 
-server.listen(PORT, () => console.log(`OmniChat API escuchando en http://localhost:${PORT}`));
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: identifier.toLowerCase().trim(), password })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setToken(data.token);
+        setUser(data.user);
+        setCompany(data.company);
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('company', JSON.stringify(data.company));
+        
+        if (data.company && data.company.access && !data.company.access.ok) {
+          setView('BILLING');
+        } else {
+          setView('APP');
+        }
+      } else {
+        alert(data.error || 'Credenciales inválidas.');
+      }
+    } catch (err) {
+      alert('Error de autenticación con el servidor.');
+    }
+  };
+
+  const handleSubscribe = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/billing/subscribe`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ holder: cardHolder, cardNumber, exp: cardExp, cvc: cardCvc })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCompany(data.company);
+        localStorage.setItem('company', JSON.stringify(data.company));
+        alert('¡Suscripción activada con éxito!');
+        setView('APP');
+      } else {
+        alert(data.error || 'Error al procesar la tarjeta.');
+      }
+    } catch (err) {
+      alert('Error de conexión con la pasarela de pagos.');
+    }
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if ((!inputText.trim() && !selectedFile) || !currentChannel) return;
+
+    if (selectedFile) {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      if (inputText.trim()) formData.append('body', inputText.trim());
+
+      try {
+        const res = await fetch(`${API_URL}/api/channels/${currentChannel.id}/files`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+        if (res.status === 402) {
+          setView('BILLING');
+          return;
+        }
+        setSelectedFile(null);
+        setInputText('');
+      } catch (err) {
+        alert('Error al subir el archivo.');
+      }
+      return;
+    }
+
+    if (socket && currentChannel) {
+      socket.emit('message:send', { channelId: currentChannel.id, body: inputText }, (ack) => {
+        if (ack && ack.error === 'SUBSCRIPTION_REQUIRED') {
+          setView('BILLING');
+        }
+      });
+    }
+    setInputText('');
+  };
+
+  const logout = () => {
+    localStorage.clear();
+    setToken('');
+    setUser(null);
+    setCompany(null);
+    setView('LANDING');
+  };
+
+  if (view === 'LANDING') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between">
+        <header className="border-b border-slate-800 p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
+          <div className="flex items-center space-x-3">
+            <div className="bg-indigo-600 p-2.5 rounded-xl"><Globe className="w-6 h-6 text-white" /></div>
+            <span className="text-xl font-bold">OmniChat <span className="text-indigo-400">Enterprise</span></span>
+          </div>
+          <div className="space-x-4">
+            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900">Iniciar Sesión</button>
+            <button onClick={() => setView('PRICING')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold">Ver Planes</button>
+          </div>
+        </header>
+        <main className="max-w-5xl mx-auto text-center px-6 py-24">
+          <h1 className="text-6xl font-black">Todo tu equipo conectado en <span className="text-indigo-400">Tiempo Real</span>.</h1>
+          <button onClick={() => setView('PRICING')} className="mt-10 px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl">Comenzar Prueba Gratis</button>
+        </main>
+      </div>
+    );
+  }
+
+  if (view === 'PRICING') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white p-8 max-w-5xl mx-auto flex flex-col justify-center">
+        <div className="text-center mb-12">
+          <h2 className="text-4xl font-black">Plan Corporativo Global</h2>
+          <p className="text-slate-400 mt-2">$5 USD / mes con 14 días de prueba gratis</p>
+        </div>
+        <div className="max-w-md mx-auto w-full bg-slate-900 border-2 border-indigo-600 p-8 rounded-3xl text-center">
+          <button onClick={() => setView('REGISTER')} className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-2xl">Iniciar Prueba de 14 Días</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'REGISTER') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl">
+          <h2 className="text-2xl font-black text-center mb-4">Crea tu Espacio Corporativo</h2>
+          <form onSubmit={handleRegister} className="space-y-4">
+            <input type="text" required placeholder="Tu Nombre Completo" value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" placeholder="Nombre de la Empresa" value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" placeholder="Código de Invitación (Opcional)" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white uppercase font-mono" />
+            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Comenzar Prueba Gratis</button>
+            <div className="text-center pt-2">
+              <button type="button" onClick={() => setView('LOGIN')} className="text-xs text-indigo-400 hover:underline">¿Ya tienes cuenta? Inicia sesión</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'LOGIN') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl">
+          <h2 className="text-2xl font-black text-center mb-6">Iniciar Sesión</h2>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Acceder</button>
+            <div className="text-center pt-2">
+              <button type="button" onClick={() => setView('REGISTER')} className="text-xs text-indigo-400 hover:underline">¿No tienes cuenta? Regístrate</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'BILLING') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-indigo-600 p-8 rounded-3xl max-w-md w-full text-center">
+          <h2 className="text-2xl font-black mb-2">Activa tu Suscripción ($5/mes)</h2>
+          <p className="text-slate-400 text-xs mb-6">Tu período de prueba ha finalizado. Ingresa una tarjeta para continuar.</p>
+          <form onSubmit={handleSubscribe} className="space-y-4 text-left">
+            <input type="text" required placeholder="Titular de la Tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" required placeholder="Número de Tarjeta (ej. 4242...)" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <div className="flex space-x-2">
+              <input type="text" required placeholder="MM/YY" value={cardExp} onChange={e => setCardExp(e.target.value)} className="w-1/2 bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+              <input type="text" required placeholder="CVC" value={cardCvc} onChange={e => setCardCvc(e.target.value)} className="w-1/2 bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            </div>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Autorizar y Continuar ($5)</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
+      {/* Sidebar de Canales y Empresa */}
+      <div className="w-80 bg-slate-900 border-r border-slate-800 flex flex-col justify-between">
+        <div>
+          <div className="p-4 border-b border-slate-800 bg-slate-950/40">
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
+              <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full">PRO TRIAL</span>
+            </div>
+
+            {company?.inviteCode && (
+              <div className="bg-slate-950 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between mt-2">
+                <div className="truncate pr-2">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase">Código Invitación</p>
+                  <p className="text-xs font-mono font-bold text-indigo-300 tracking-widest">{company.inviteCode}</p>
+                </div>
+                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold">
+                  Copiar
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 space-y-1">
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Canales de la Empresa</p>
+            {channels.map((ch) => (
+              <button 
+                key={ch.id} 
+                onClick={() => setCurrentChannel(ch)} 
+                className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel?.id === ch.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}
+              >
+                # {ch.name}
+              </button>
+            ))}
+          </div>
+
+          {/* LISTA DE MIEMBROS DE LA EMPRESA (Sincronizado) */}
+          <div className="p-4 border-t border-slate-800">
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
+              <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
+            </p>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {companyMembers.map((m, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-slate-950/60 p-2 rounded-xl border border-slate-800/60 text-xs">
+                  <div className="flex items-center space-x-2 truncate">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span className="font-semibold text-slate-200 truncate">{m.name || m.email}</span>
+                  </div>
+                  <span className="text-[9px] uppercase bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded font-bold">{m.role || 'member'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex items-center justify-between">
+          <div className="truncate pr-2">
+            <p className="text-xs font-bold text-slate-200 truncate">{user?.name || user?.email}</p>
+            <p className="text-[10px] text-slate-500 capitalize">{user?.role || 'Miembro'}</p>
+          </div>
+          <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl" title="Cerrar Sesión"><LogOut className="w-4 h-4" /></button>
+        </div>
+      </div>
+
+      {/* Panel Central */}
+      <div className="flex-1 flex flex-col bg-slate-950">
+        <div className="h-16 border-b border-slate-800 px-6 flex justify-between items-center bg-slate-900/50">
+          <span className="text-lg font-bold">
+            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + (currentChannel?.name || 'General')}
+          </span>
+          <div className="flex items-center space-x-3">
+            {user?.role === 'owner' && (
+              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700">Gestionar Suscripción</button>
+            )}
+
+            {!isRemoteActive ? (
+              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Monitor className="w-4 h-4 mr-2" /> Iniciar AnyDesk</button>
+            ) : (
+              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-2" /> Cerrar AnyDesk</button>
+            )}
+
+            {!isVideoCallActive ? (
+              <button onClick={startVideoCall} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Video className="w-4 h-4 mr-2" /> Videollamada HD</button>
+            ) : (
+              <button onClick={stopVideoCall} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-2" /> Colgar Videollamada</button>
+            )}
+          </div>
+        </div>
+
+        {/* CONTENIDO CENTRAL */}
+        {isRemoteActive ? (
+          <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800" />
+          </div>
+        ) : isVideoCallActive ? (
+          <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
+            <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-2xl border border-slate-800 shadow-2xl" />
+            <div className="absolute top-6 left-6 bg-slate-900/90 border border-slate-700 px-4 py-2 rounded-xl text-xs font-bold text-emerald-400 flex items-center">
+              ● Cámara Activa ({user?.name})
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {messages.map((m) => (
+                <div key={m.id || Math.random()} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
+                    <div className="flex justify-between items-center mb-1 space-x-4">
+                      <span className="text-xs font-bold text-indigo-400">{m.userName || 'Miembro'}</span>
+                      <span className="text-[10px] text-slate-500">{new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
+                    {m.file && (
+                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
+                        <span className="truncate mr-2 font-medium">{m.file.name}</span>
+                        <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
+              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
+                <Paperclip className="w-5 h-5 text-slate-300" />
+                <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
+              </label>
+              <input type="text" placeholder={`Enviar mensaje a #${currentChannel?.name || 'General'}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
