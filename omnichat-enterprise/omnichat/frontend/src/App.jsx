@@ -27,7 +27,7 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat y WebSockets (Canales fijos asegurados para evitar que desaparezcan)
+  // Chat y WebSockets
   const [socket, setSocket] = useState(null);
   const [channels, setChannels] = useState([
     { id: 'general', name: 'General - Empresa' },
@@ -72,21 +72,18 @@ export default function App() {
   useEffect(() => {
     if (!token || view !== 'APP') return;
 
-    // Intentar obtener canales del servidor; si el backend devuelve array válido, los usamos
     fetch(`${API_URL}/api/channels`, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
-          // Mapear asegurando formato consistente
           const mapped = data.map(ch => ({ id: ch.id, name: ch.name }));
           setChannels(mapped);
         }
       })
       .catch(() => {});
 
-    // Sincronizar miembros de la empresa en tiempo real
     const fetchMembers = () => {
       fetch(`${API_URL}/api/company/members`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -149,7 +146,6 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Funciones AnyDesk
   const startRemoteSession = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
@@ -169,7 +165,6 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
-  // Funciones Videollamada HD
   const startVideoCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -196,7 +191,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           name, 
-          email: identifier.toLowerCase(), 
+          email: identifier.toLowerCase().trim(), 
           password, 
           companyName: inviteCode ? undefined : companyName,
           inviteCode: inviteCode ? inviteCode.trim().toUpperCase() : undefined
@@ -225,7 +220,7 @@ export default function App() {
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: identifier.toLowerCase(), password })
+        body: JSON.stringify({ email: identifier.toLowerCase().trim(), password })
       });
       const data = await res.json();
       if (res.ok) {
@@ -276,7 +271,7 @@ export default function App() {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputText.trim() && !selectedFile || !currentChannel) return;
+    if ((!inputText.trim() && !selectedFile) || !currentChannel) return;
 
     if (selectedFile) {
       const formData = new FormData();
@@ -366,6 +361,9 @@ export default function App() {
             <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Comenzar Prueba Gratis</button>
+            <div className="text-center pt-2">
+              <button type="button" onClick={() => setView('LOGIN')} className="text-xs text-indigo-400 hover:underline">¿Ya tienes cuenta? Inicia sesión</button>
+            </div>
           </form>
         </div>
       </div>
@@ -381,6 +379,9 @@ export default function App() {
             <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Acceder</button>
+            <div className="text-center pt-2">
+              <button type="button" onClick={() => setView('REGISTER')} className="text-xs text-indigo-400 hover:underline">¿No tienes cuenta? Regístrate</button>
+            </div>
           </form>
         </div>
       </div>
