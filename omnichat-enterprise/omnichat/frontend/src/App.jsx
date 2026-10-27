@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import { 
   Building2, Send, Paperclip, Video, FileText, 
-  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square
+  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square, Camera
 } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
@@ -15,7 +15,6 @@ export default function App() {
   const [company, setCompany] = useState(JSON.parse(localStorage.getItem('company') || 'null'));
 
   // Estados de Formulario
-  const [authMode, setAuthMode] = useState('EMAIL');
   const [name, setName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [inviteCode, setInviteCode] = useState('');
@@ -29,18 +28,24 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat, WebSockets y Escritorio Remoto (AnyDesk Web)
+  // Chat y WebSockets
   const [socket, setSocket] = useState(null);
   const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
-  
-  // Estados para Control Remoto tipo AnyDesk
+  const [companyMembers, setCompanyMembers] = useState([]);
+
+  // Estados para Control Remoto (AnyDesk Web)
   const [isRemoteActive, setIsRemoteActive] = useState(false);
   const [remoteId, setRemoteId] = useState('');
   const remoteVideoRef = useRef(null);
   const [remoteStream, setRemoteStream] = useState(null);
+
+  // Estados para Videollamada HD Real
+  const [isVideoCallActive, setIsVideoCallActive] = useState(false);
+  const localVideoRef = useRef(null);
+  const [localStream, setLocalStream] = useState(null);
 
   const messagesEndRef = useRef(null);
 
@@ -68,6 +73,7 @@ export default function App() {
       }
     });
 
+    // Cargar mensajes del canal
     fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -82,6 +88,11 @@ export default function App() {
         if (Array.isArray(data)) setMessages(data);
       })
       .catch(() => {});
+
+    // Simular lista de miembros de la empresa conectados
+    setCompanyMembers([
+      { id: user?.id, name: user?.name || 'Tú', role: user?.role || 'owner', online: true }
+    ]);
 
     socket.on('message:new', (msg) => {
       if (msg.channelId === currentChannel.id) {
@@ -98,28 +109,43 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Funciones de Control Remoto (AnyDesk Mode)
+  // Funciones AnyDesk
   const startRemoteSession = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       setRemoteStream(stream);
       setIsRemoteActive(true);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
-      }
-      // Generar ID de AnyDesk simulado basado en el usuario
+      setIsVideoCallActive(false); // Apagar videollamada si se activa remote
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       setRemoteId(Math.floor(100000000 + Math.random() * 900000000).toString());
     } catch (err) {
-      alert('No se pudo iniciar la compartición de pantalla para el control remoto.');
+      alert('No se pudo iniciar la compartición de pantalla.');
     }
   };
 
   const stopRemoteSession = () => {
-    if (remoteStream) {
-      remoteStream.getTracks().forEach(track => track.stop());
-    }
+    if (remoteStream) remoteStream.getTracks().forEach(t => t.stop());
     setRemoteStream(null);
     setIsRemoteActive(false);
+  };
+
+  // Funciones Videollamada HD Real
+  const startVideoCall = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      setIsVideoCallActive(true);
+      setIsRemoteActive(false); // Apagar remote si se activa videollamada
+      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    } catch (err) {
+      alert('No se pudo acceder a la cámara o micrófono. Verifica los permisos.');
+    }
+  };
+
+  const stopVideoCall = () => {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    setLocalStream(null);
+    setIsVideoCallActive(false);
   };
 
   const handleRegister = async (e) => {
@@ -253,40 +279,21 @@ export default function App() {
 
   if (view === 'LANDING') {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
+      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between">
         <header className="border-b border-slate-800/80 p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
           <div className="flex items-center space-x-3">
-            <div className="bg-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20">
-              <Globe className="w-6 h-6 text-white" />
-            </div>
-            <span className="text-xl font-bold tracking-tight">OmniChat <span className="text-indigo-400">Enterprise</span></span>
+            <div className="bg-indigo-600 p-2.5 rounded-xl"><Globe className="w-6 h-6 text-white" /></div>
+            <span className="text-xl font-bold">OmniChat <span className="text-indigo-400">Enterprise</span></span>
           </div>
           <div className="space-x-4">
-            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900 transition">Iniciar Sesión</button>
-            <button onClick={() => setView('PRICING')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-sm shadow-lg shadow-indigo-600/30 transition">Ver Planes ($5/mes)</button>
+            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900">Iniciar Sesión</button>
+            <button onClick={() => setView('PRICING')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold">Ver Planes</button>
           </div>
         </header>
-
         <main className="max-w-5xl mx-auto text-center px-6 py-24">
-          <span className="bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs px-4 py-1.5 rounded-full font-semibold uppercase tracking-widest">
-            Plataforma Global de Colaboración Corporativa
-          </span>
-          <h1 className="text-6xl font-black mt-6 tracking-tight leading-tight">
-            Todo tu equipo conectado en <span className="text-indigo-400">Tiempo Real</span>.
-          </h1>
-          <p className="text-slate-400 mt-6 text-xl max-w-2xl mx-auto font-normal">
-            Mensajería segura por departamentos, canales privados, transferencia de archivos pesados y control remoto integrado tipo AnyDesk.
-          </p>
-          <div className="mt-10 flex justify-center space-x-4">
-            <button onClick={() => setView('PRICING')} className="px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl shadow-indigo-600/30 transition">
-              Comenzar Prueba Gratis (14 Días)
-            </button>
-          </div>
+          <h1 className="text-6xl font-black">Todo tu equipo conectado en <span className="text-indigo-400">Tiempo Real</span>.</h1>
+          <button onClick={() => setView('PRICING')} className="mt-10 px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl">Comenzar Prueba Gratis</button>
         </main>
-
-        <footer className="border-t border-slate-900 p-6 text-center text-slate-600 text-sm">
-          OmniChat Enterprise © 2026. Todos los derechos reservados.
-        </footer>
       </div>
     );
   }
@@ -295,42 +302,11 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-950 text-white p-8 max-w-5xl mx-auto flex flex-col justify-center">
         <div className="text-center mb-12">
-          <h2 className="text-4xl font-black">Planes Simples y Transparentes</h2>
-          <p className="text-slate-400 mt-2 text-lg">14 días de prueba gratis sin tarjeta de crédito. Luego solo $5 USD al mes.</p>
+          <h2 className="text-4xl font-black">Plan Corporativo Global</h2>
+          <p className="text-slate-400 mt-2">$5 USD / mes con 14 días de prueba gratis</p>
         </div>
-
-        <div className="grid md:grid-cols-2 gap-8 max-w-3xl mx-auto w-full">
-          <div className="bg-slate-900 border-2 border-indigo-600 p-8 rounded-3xl flex flex-col justify-between relative shadow-2xl shadow-indigo-600/20">
-            <span className="absolute -top-3.5 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-white font-bold text-xs px-4 py-1 rounded-full uppercase tracking-wider">MÁS POPULAR</span>
-            <div>
-              <h3 className="text-2xl font-bold">Plan Corporativo Global</h3>
-              <p className="text-4xl font-black mt-4">$5 <span className="text-sm font-normal text-slate-400">USD / mes</span></p>
-              <ul className="mt-6 space-y-4 text-sm text-slate-300">
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Canales y Departamentos Ilimitados</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Envío de Archivos y Documentos</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Escritorio Remoto Tipo AnyDesk</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Aislamiento Multi-Tenant Seguro</li>
-              </ul>
-            </div>
-            <button onClick={() => { setSelectedPlan('STANDARD'); setView('REGISTER'); }} className="mt-8 w-full py-4 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-2xl shadow-lg transition">
-              Iniciar Prueba de 14 Días
-            </button>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl flex flex-col justify-between">
-            <div>
-              <h3 className="text-2xl font-bold">Enterprise Dedicado</h3>
-              <p className="text-4xl font-black mt-4">$49 <span className="text-sm font-normal text-slate-400">USD / mes</span></p>
-              <ul className="mt-6 space-y-4 text-sm text-slate-300">
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Todo lo del plan Global</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Servidor Dedicado Exclusivo</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Soporte Técnico Prioritario 24/7</li>
-              </ul>
-            </div>
-            <button onClick={() => { setSelectedPlan('ENTERPRISE'); setView('REGISTER'); }} className="mt-8 w-full py-4 border border-slate-700 hover:bg-slate-800 font-bold rounded-2xl transition">
-              Contratar Enterprise
-            </button>
-          </div>
+        <div className="max-w-md mx-auto w-full bg-slate-900 border-2 border-indigo-600 p-8 rounded-3xl text-center">
+          <button onClick={() => setView('REGISTER')} className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-2xl">Iniciar Prueba de 14 Días</button>
         </div>
       </div>
     );
@@ -340,43 +316,15 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl">
-          <h2 className="text-2xl font-black text-center mb-1">Crea tu Espacio Corporativo</h2>
-          <p className="text-center text-xs text-indigo-400 mb-6 font-medium">14 días de prueba gratis • No requiere tarjeta ahora</p>
-
+          <h2 className="text-2xl font-black text-center mb-4">Crea tu Espacio Corporativo</h2>
           <form onSubmit={handleRegister} className="space-y-4">
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Tu Nombre Completo</label>
-              <input type="text" required placeholder="Ej. Juan Pérez" value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Nombre de la Empresa</label>
-              <input type="text" required={!inviteCode} placeholder="Ej. Global Solutions S.A." value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-
-            <div className="border-t border-b border-slate-800/80 py-3 my-1">
-              <label className="block text-xs uppercase font-bold text-indigo-400 mb-1">¿Tienes Código de Invitación?</label>
-              <input type="text" placeholder="Ingresa el código si te invitaron" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none uppercase tracking-widest font-mono" />
-            </div>
-
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Correo Electrónico Corporativo</label>
-              <input type="email" required placeholder="admin@empresa.com" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Contraseña</label>
-              <input type="password" required placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition mt-2">
-              Comenzar Prueba Gratis
-            </button>
+            <input type="text" required placeholder="Tu Nombre Completo" value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" placeholder="Nombre de la Empresa" value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" placeholder="Código de Invitación (Opcional)" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white uppercase font-mono" />
+            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Comenzar Prueba Gratis</button>
           </form>
-
-          <p className="text-center text-xs text-slate-500 mt-6">
-            ¿Ya tienes una cuenta? <button onClick={() => setView('LOGIN')} className="text-indigo-400 underline font-bold">Inicia Sesión</button>
-          </p>
         </div>
       </div>
     );
@@ -388,21 +336,10 @@ export default function App() {
         <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl">
           <h2 className="text-2xl font-black text-center mb-6">Iniciar Sesión</h2>
           <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Correo Electrónico</label>
-              <input type="email" required placeholder="admin@empresa.com" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Contraseña</label>
-              <input type="password" required placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition">
-              Acceder al Sistema
-            </button>
+            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Acceder</button>
           </form>
-          <p className="text-center text-xs text-slate-500 mt-6">
-            ¿No tienes cuenta? <button onClick={() => setView('PRICING')} className="text-indigo-400 underline font-bold">Ver Planes</button>
-          </p>
         </div>
       </div>
     );
@@ -411,40 +348,13 @@ export default function App() {
   if (view === 'BILLING') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="bg-slate-900 border border-indigo-600/50 p-8 rounded-3xl max-w-md w-full shadow-2xl">
-          <div className="text-center mb-6">
-            <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs px-3 py-1 rounded-full font-semibold">PRUEBA GRATUITA FINALIZADA</span>
-            <h2 className="text-2xl font-black mt-3">Activa tu Suscripción</h2>
-            <p className="text-xs text-slate-400 mt-1">Ingresa tus datos de pago para continuar disfrutando de OmniChat Enterprise ($5 USD/mes).</p>
-          </div>
-
-          <form onSubmit={handleSubscribe} className="space-y-4">
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Titular de la Tarjeta</label>
-              <input type="text" required placeholder="Nombre como figura en la tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-            <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Número de Tarjeta</label>
-              <input type="text" required placeholder="4242 4242 4242 4242" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Vencimiento (MM/YY)</label>
-                <input type="text" required placeholder="12/28" value={cardExp} onChange={e => setCardExp(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs uppercase font-bold text-slate-400 mb-1">CVC</label>
-                <input type="password" required placeholder="123" maxLength="4" value={cardCvc} onChange={e => setCardCvc(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-              </div>
-            </div>
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition mt-4">
-              Autorizar y Continuar ($5 USD)
-            </button>
+        <div className="bg-slate-900 border border-indigo-600 p-8 rounded-3xl max-w-md w-full text-center">
+          <h2 className="text-2xl font-black mb-2">Activa tu Suscripción</h2>
+          <form onSubmit={handleSubscribe} className="space-y-4 text-left">
+            <input type="text" required placeholder="Titular de la Tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <input type="text" required placeholder="Número de Tarjeta" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Autorizar y Continuar ($5)</button>
           </form>
-
-          <div className="mt-6 text-center">
-            <button onClick={logout} className="text-xs text-slate-500 hover:text-slate-300 underline">Cerrar Sesión</button>
-          </div>
         </div>
       </div>
     );
@@ -458,16 +368,16 @@ export default function App() {
           <div className="p-4 border-b border-slate-800 bg-slate-950/40">
             <div className="flex items-center justify-between mb-2">
               <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
-              <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">PRO TRIAL</span>
+              <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full">PRO TRIAL</span>
             </div>
 
             {company?.inviteCode && (
               <div className="bg-slate-950 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between mt-2">
                 <div className="truncate pr-2">
-                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Código Invitación</p>
-                  <p className="text-xs font-mono font-bold text-indigo-300 tracking-widest select-all">{company.inviteCode}</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase">Código Invitación</p>
+                  <p className="text-xs font-mono font-bold text-indigo-300 tracking-widest">{company.inviteCode}</p>
                 </div>
-                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold transition flex-shrink-0">
+                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold">
                   Copiar
                 </button>
               </div>
@@ -476,15 +386,27 @@ export default function App() {
 
           <div className="p-4 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Canales de la Empresa</p>
-            <button onClick={() => setCurrentChannel({ id: 'general', name: 'General - Empresa' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'general' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
-              # General
-            </button>
-            <button onClick={() => setCurrentChannel({ id: 'ventas', name: 'Equipo de Ventas' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'ventas' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
-              # Ventas & Comercial
-            </button>
-            <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
-              # Soporte & Operaciones
-            </button>
+            <button onClick={() => setCurrentChannel({ id: 'general', name: 'General - Empresa' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'general' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># General</button>
+            <button onClick={() => setCurrentChannel({ id: 'ventas', name: 'Equipo de Ventas' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'ventas' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Ventas & Comercial</button>
+            <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Soporte & Operaciones</button>
+          </div>
+
+          {/* LISTA DE MIEMBROS CONECTADOS */}
+          <div className="p-4 border-t border-slate-800">
+            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
+              <Users className="w-3 h-3 mr-1.5" /> Miembros en línea
+            </p>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {companyMembers.map((m, idx) => (
+                <div key={idx} className="flex items-center justify-between bg-slate-950/60 p-2 rounded-xl border border-slate-800/60 text-xs">
+                  <div className="flex items-center space-x-2 truncate">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span className="font-semibold text-slate-200 truncate">{m.name}</span>
+                  </div>
+                  <span className="text-[9px] uppercase bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded font-bold">{m.role}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -493,49 +415,45 @@ export default function App() {
             <p className="text-xs font-bold text-slate-200 truncate">{user?.name || user?.email}</p>
             <p className="text-[10px] text-slate-500 capitalize">{user?.role || 'Miembro'}</p>
           </div>
-          <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl transition" title="Cerrar Sesión">
-            <LogOut className="w-4 h-4" />
-          </button>
+          <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl" title="Cerrar Sesión"><LogOut className="w-4 h-4" /></button>
         </div>
       </div>
 
-      {/* Panel Central: Chat o Escritorio Remoto (AnyDesk Web) */}
+      {/* Panel Central */}
       <div className="flex-1 flex flex-col bg-slate-950">
         <div className="h-16 border-b border-slate-800 px-6 flex justify-between items-center bg-slate-900/50">
-          <div className="flex items-center space-x-3">
-            <span className="text-lg font-bold">{isRemoteActive ? '🖥️ AnyDesk Remoto (ID: ' + remoteId + ')' : '#' + currentChannel.name}</span>
-          </div>
+          <span className="text-lg font-bold">
+            {isRemoteActive ? '🖥️ AnyDesk Remoto (' + remoteId + ')' : isVideoCallActive ? '📹 Videollamada HD en Vivo' : '#' + currentChannel.name}
+          </span>
           <div className="flex items-center space-x-3">
             {user?.role === 'owner' && (
-              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700 transition">
-                Gestionar Suscripción
-              </button>
+              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700">Gestionar Suscripción</button>
             )}
 
-            {/* BOTÓN ANYDESK INTEGRADO */}
             {!isRemoteActive ? (
-              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
-                <Monitor className="w-4 h-4 mr-2" /> Iniciar AnyDesk
-              </button>
+              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Monitor className="w-4 h-4 mr-2" /> Iniciar AnyDesk</button>
             ) : (
-              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
-                <Square className="w-4 h-4 mr-2" /> Desconectar Remoto
-              </button>
+              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-2" /> Cerrar AnyDesk</button>
             )}
 
-            <button onClick={() => alert('Iniciando conferencia segura en vivo...')} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
-              <Video className="w-4 h-4 mr-2" /> Videollamada HD
-            </button>
+            {!isVideoCallActive ? (
+              <button onClick={startVideoCall} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Video className="w-4 h-4 mr-2" /> Videollamada HD</button>
+            ) : (
+              <button onClick={stopVideoCall} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-2" /> Colgar Videollamada</button>
+            )}
           </div>
         </div>
 
-        {/* CONTENIDO CENTRAL: SI ESTÁ ACTIVO EL ESCRITORIO REMOTO O EL CHAT */}
+        {/* CONTENIDO CENTRAL: ANYDESK, VIDEOLLAMADA O CHAT */}
         {isRemoteActive ? (
           <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
-            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800 shadow-2xl" />
-            <div className="absolute bottom-6 bg-slate-900/90 border border-slate-700 px-6 py-3 rounded-2xl flex items-center space-x-4 shadow-xl">
-              <span className="text-xs font-bold text-emerald-400 flex items-center">● Transmitiendo Sesión Remota</span>
-              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 text-xs px-3 py-1.5 rounded-xl font-bold transition">Finalizar Control</button>
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800" />
+          </div>
+        ) : isVideoCallActive ? (
+          <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
+            <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover rounded-2xl border border-slate-800 shadow-2xl" />
+            <div className="absolute top-6 left-6 bg-slate-900/90 border border-slate-700 px-4 py-2 rounded-xl text-xs font-bold text-emerald-400 flex items-center">
+              ● Cámara Activa ({user?.name})
             </div>
           </div>
         ) : (
@@ -543,16 +461,16 @@ export default function App() {
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               {messages.map((m) => (
                 <div key={m.id} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md">
                     <div className="flex justify-between items-center mb-1 space-x-4">
                       <span className="text-xs font-bold text-indigo-400">{m.userName}</span>
                       <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
-                    {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
+                    {m.body && <p className="text-sm">{m.body}</p>}
                     {m.file && (
-                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
-                        <span className="truncate mr-2 font-medium">{m.file.name}</span>
-                        <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between">
+                        <span className="truncate mr-2">{m.file.name}</span>
+                        <FileText className="w-4 h-4 text-indigo-400" />
                       </a>
                     )}
                   </div>
@@ -562,14 +480,12 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
-              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
+              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer border border-slate-700">
                 <Paperclip className="w-5 h-5 text-slate-300" />
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
               <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition">
-                <Send className="w-5 h-5" />
-              </button>
+              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold"><Send className="w-5 h-5" /></button>
             </form>
           </>
         )}
