@@ -20,7 +20,6 @@ export default function App() {
   const [inviteCode, setInviteCode] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
-  const [selectedPlan, setSelectedPlan] = useState('STANDARD');
 
   // Facturación
   const [cardHolder, setCardHolder] = useState('');
@@ -73,7 +72,7 @@ export default function App() {
       }
     });
 
-    // Cargar mensajes históricos del canal
+    // Cargar historial de mensajes del canal
     fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -89,16 +88,15 @@ export default function App() {
       })
       .catch(() => {});
 
-    // Obtener la lista real de miembros de la empresa desde el backend
+    // Cargar miembros reales de la empresa desde el backend
     fetch(`${API_URL}/api/company/members`, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && data.length > 0) {
           setCompanyMembers(data);
         } else {
-          // Respaldo si el backend devuelve el usuario actual
           setCompanyMembers([user]);
         }
       })
@@ -121,7 +119,7 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // AnyDesk
+  // Funciones AnyDesk
   const startRemoteSession = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
@@ -141,7 +139,7 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
-  // Videollamada HD
+  // Funciones Videollamada HD
   const startVideoCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -405,7 +403,7 @@ export default function App() {
             <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Soporte & Operaciones</button>
           </div>
 
-          {/* LISTA DE MIEMBROS REALES DE LA EMPRESA */}
+          {/* LISTA DE MIEMBROS DE LA EMPRESA */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
               <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
