@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import { 
   Building2, Send, Paperclip, Video, FileText, 
-  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square, Camera, PhoneCall, Bell, MessageSquare, Menu, X
+  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square, Camera, PhoneCall, Bell, MessageSquare, Menu, X, Check, CheckCheck
 } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
@@ -27,7 +27,7 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat, Canales y Mensajes Privados (DM)
+  // Chat, Canales y MP
   const [socket, setSocket] = useState(null);
   const [channels, setChannels] = useState([
     { id: 'general', name: 'General - Empresa' },
@@ -36,22 +36,20 @@ export default function App() {
   ]);
   const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa', type: 'channel' });
   const [messages, setMessages] = useState([]);
+  const [dmMessages, setDmMessages] = useState({}); // { recipientId: [ {id, senderId, body, read, createdAt} ] }
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [companyMembers, setCompanyMembers] = useState([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Notificaciones y Llamadas Directas (Estilo Discord / Teams)
+  // Llamadas y WebRTC
   const [incomingCall, setIncomingCall] = useState(null);
   const [activeCallUser, setActiveCallUser] = useState(null);
-
-  // Estados para Control Remoto (AnyDesk / TeamViewer Web)
   const [isRemoteActive, setIsRemoteActive] = useState(false);
   const [remoteId, setRemoteId] = useState('');
   const remoteVideoRef = useRef(null);
   const [remoteStream, setRemoteStream] = useState(null);
 
-  // Estados para Videollamada HD P2P (WebRTC)
   const [isVideoCallActive, setIsVideoCallActive] = useState(false);
   const localVideoRef = useRef(null);
   const remoteCallVideoRef = useRef(null);
@@ -60,7 +58,7 @@ export default function App() {
 
   const messagesEndRef = useRef(null);
 
-  // Inicializar Socket y Eventos de Llamada
+  // Inicializar Socket y Eventos en Tiempo Real
   useEffect(() => {
     if (token && user) {
       const newSocket = io(API_URL, { auth: { token } });
@@ -72,6 +70,30 @@ export default function App() {
         setView('APP');
       }
 
+      // Escuchar Mensajes Privados (MP) en tiempo real
+      newSocket.on('dm:new', (msg) => {
+        setDmMessages(prev => {
+          const list = prev[msg.senderId] || [];
+          return { ...prev, [msg.senderId]: [...list, msg] };
+        });
+
+        // Si estamos actualmente chateando con este remitente, marcar como leído
+        if (currentChannel.type === 'dm' && currentChannel.id === msg.senderId) {
+          newSocket.emit('dm:read', { messageId: msg.id, senderId: msg.senderId });
+        }
+      });
+
+      newSocket.on('dm:marked-read', ({ messageId }) => {
+        setDmMessages(prev => {
+          const updated = { ...prev };
+          for (const partnerId in updated) {
+            updated[partnerId] = updated[partnerId].map(m => m.id === messageId ? { ...m, read: true } : m);
+          }
+          return updated;
+        });
+      });
+
+      // Escuchar Llamadas Entrantes y Señalización WebRTC
       newSocket.on('call:ringing', ({ fromUserId, fromUserName }) => {
         setIncomingCall({ fromUserId, fromUserName });
       });
@@ -100,9 +122,9 @@ export default function App() {
 
       return () => newSocket.close();
     }
-  }, [token, user]);
+  }, [token, user, currentChannel]);
 
-  // Cargar canales del servidor y miembros reales de la empresa
+  // Cargar canales y miembros
   useEffect(() => {
     if (!token || view !== 'APP') return;
 
@@ -112,8 +134,7 @@ export default function App() {
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
-          const mapped = data.map(ch => ({ id: ch.id, name: ch.name }));
-          setChannels(mapped);
+          setChannels(data.map(ch => ({ id: ch.id, name: ch.name })));
         }
       })
       .catch(() => {});
@@ -130,9 +151,7 @@ export default function App() {
             setCompanyMembers([user]);
           }
         })
-        .catch(() => {
-          setCompanyMembers([user]);
-        });
+        .catch(() => setCompanyMembers([user]));
     };
 
     fetchMembers();
@@ -140,58 +159,36 @@ export default function App() {
     return () => clearInterval(interval);
   }, [token, view]);
 
-  // Sintonizar socket y mensajes al cambiar de canal o abrir MP
+  // Manejar cambio de canal público
   useEffect(() => {
-    if (!socket || !currentChannel || !user || view !== 'APP') return;
+    if (!socket || !currentChannel || currentChannel.type === 'dm' || view !== 'APP') return;
 
-    if (currentChannel.type === 'dm') {
-      const dmRoom = [user.id, currentChannel.id].sort().join('_');
-      socket.emit('channel:join', dmRoom);
-      setMessages([]); 
-    } else {
-      socket.emit('channel:join', currentChannel.id, (res) => {
-        if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
-          setView('BILLING');
-        }
-      });
+    socket.emit('channel:join', currentChannel.id, (res) => {
+      if (res && res.error === 'SUBSCRIPTION_REQUIRED') setView('BILLING');
+    });
 
-      fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
-        headers: { Authorization: `Bearer ${token}` }
+    fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(async (res) => {
+        if (res.status === 402) { setView('BILLING'); return []; }
+        return res.json();
       })
-        .then(async (res) => {
-          if (res.status === 402) {
-            setView('BILLING');
-            return [];
-          }
-          return res.json();
-        })
-        .then((data) => {
-          if (Array.isArray(data)) setMessages(data);
-        })
-        .catch(() => {});
-    }
+      .then((data) => { if (Array.isArray(data)) setMessages(data); })
+      .catch(() => {});
 
     socket.on('message:new', (msg) => {
-      if (currentChannel.type === 'dm') {
-        const dmRoom = [user.id, currentChannel.id].sort().join('_');
-        if (msg.channelId === dmRoom) {
-          setMessages((prev) => [...prev, msg]);
-        }
-      } else {
-        if (msg.channelId === currentChannel.id) {
-          setMessages((prev) => [...prev, msg]);
-        }
+      if (msg.channelId === currentChannel.id) {
+        setMessages((prev) => [...prev, msg]);
       }
     });
 
-    return () => {
-      socket.off('message:new');
-    };
-  }, [socket, currentChannel, user, token, view]);
+    return () => { socket.off('message:new'); };
+  }, [socket, currentChannel, token, view]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, dmMessages]);
 
   const openDirectMessage = (member) => {
     if (member.id === user.id) return;
@@ -203,6 +200,7 @@ export default function App() {
     setMobileMenuOpen(false);
   };
 
+  // WebRTC Setup
   const startWebRTC = async (isCaller) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -253,9 +251,7 @@ export default function App() {
     startWebRTC(true);
   };
 
-  const rejectIncomingCall = () => {
-    setIncomingCall(null);
-  };
+  const rejectIncomingCall = () => { setIncomingCall(null); };
 
   const hangUpCall = () => {
     if (localStream) localStream.getTracks().forEach(t => t.stop());
@@ -273,9 +269,7 @@ export default function App() {
       setIsVideoCallActive(false);
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       setRemoteId(Math.floor(100000000 + Math.random() * 900000000).toString());
-    } catch (err) {
-      alert('No se pudo iniciar la compartición de pantalla.');
-    }
+    } catch (err) { alert('No se pudo compartir pantalla.'); }
   };
 
   const stopRemoteSession = () => {
@@ -284,97 +278,20 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
-  const handleRegister = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name, 
-          email: identifier.toLowerCase().trim(), 
-          password, 
-          companyName: inviteCode ? undefined : companyName,
-          inviteCode: inviteCode ? inviteCode.trim().toUpperCase() : undefined
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setToken(data.token); setUser(data.user); setCompany(data.company);
-        localStorage.setItem(TOKEN_KEY, data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
-        localStorage.setItem('company', JSON.stringify(data.company));
-        setView('APP');
-      } else { alert(data.error || 'Error en el registro.'); }
-    } catch (err) { alert('No se pudo conectar con el servidor.'); }
-  };
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: identifier.toLowerCase().trim(), password })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setToken(data.token); setUser(data.user); setCompany(data.company);
-        localStorage.setItem(TOKEN_KEY, data.token);
-        localStorage.setItem('user', JSON.stringify(data.user));
-        localStorage.setItem('company', JSON.stringify(data.company));
-        setView(data.company?.access?.ok ? 'APP' : 'BILLING');
-      } else { alert(data.error || 'Credenciales inválidas.'); }
-    } catch (err) { alert('Error de autenticación.'); }
-  };
-
-  const handleSubscribe = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await fetch(`${API_URL}/api/billing/subscribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ holder: cardHolder, cardNumber, exp: cardExp, cvc: cardCvc })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setCompany(data.company);
-        localStorage.setItem('company', JSON.stringify(data.company));
-        alert('¡Suscripción activada!'); setView('APP');
-      } else { alert(data.error || 'Error al procesar la tarjeta.'); }
-    } catch (err) { alert('Error de conexión.'); }
-  };
-
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if ((!inputText.trim() && !selectedFile) || !currentChannel) return;
 
     if (currentChannel.type === 'dm') {
-      const dmRoom = [user.id, currentChannel.id].sort().join('_');
-      const msg = {
-        id: Math.random().toString(),
-        channelId: dmRoom,
-        userId: user.id,
-        userName: user.name,
-        body: inputText,
-        createdAt: Date.now()
-      };
-      socket.emit('message:send', { channelId: dmRoom, body: inputText });
-      setMessages(prev => [...prev, msg]);
+      socket.emit('dm:send', { recipientId: currentChannel.id, body: inputText }, (res) => {
+        if (res.ok) {
+          setDmMessages(prev => {
+            const list = prev[currentChannel.id] || [];
+            return { ...prev, [currentChannel.id]: [...list, res.msg] };
+          });
+        }
+      });
       setInputText('');
-      return;
-    }
-
-    if (selectedFile) {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      if (inputText.trim()) formData.append('body', inputText.trim());
-      try {
-        await fetch(`${API_URL}/api/channels/${currentChannel.id}/files`, {
-          method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData
-        });
-        setSelectedFile(null); setInputText('');
-      } catch (err) { alert('Error al subir archivo.'); }
       return;
     }
 
@@ -386,99 +303,44 @@ export default function App() {
 
   const logout = () => { localStorage.clear(); setToken(''); setUser(null); setCompany(null); setView('LANDING'); };
 
-  if (view === 'LANDING') {
+  if (view === 'LANDING' || view === 'REGISTER' || view === 'LOGIN' || view === 'BILLING') {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between">
-        <header className="border-b border-slate-800 p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
-          <div className="flex items-center space-x-3">
-            <div className="bg-indigo-600 p-2.5 rounded-xl"><Globe className="w-6 h-6 text-white" /></div>
-            <span className="text-xl font-bold">OmniChat <span className="text-indigo-400">Enterprise</span></span>
-          </div>
-          <div className="space-x-4">
-            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900">Iniciar Sesión</button>
-            <button onClick={() => setView('REGISTER')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold">Comenzar Gratis</button>
-          </div>
-        </header>
-        <main className="max-w-5xl mx-auto text-center px-6 py-24">
-          <h1 className="text-5xl md:text-6xl font-black">Discord, AnyDesk, Teams y Meet en <span className="text-indigo-400">Una Sola App</span>.</h1>
-          <button onClick={() => setView('REGISTER')} className="mt-10 px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl">Crear Espacio Corporativo</button>
-        </main>
-      </div>
-    );
-  }
-
-  if (view === 'REGISTER') {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl text-white">
-          <h2 className="text-2xl font-black text-center mb-4">Crea tu Espacio Corporativo</h2>
-          <form onSubmit={handleRegister} className="space-y-4">
-            <input type="text" required placeholder="Tu Nombre Completo" value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <input type="text" placeholder="Nombre de la Empresa" value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <input type="text" placeholder="Código de Invitación (Opcional)" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white uppercase font-mono" />
-            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Registrarse</button>
-          </form>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-white">
+        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl text-center">
+          <h2 className="text-2xl font-black mb-4">OmniChat Enterprise</h2>
+          <p className="text-slate-400 text-sm mb-6">Por favor inicia sesión para acceder al sistema.</p>
+          <button onClick={() => setView('LOGIN')} className="w-full bg-indigo-600 hover:bg-indigo-500 font-bold p-3.5 rounded-xl">Ir al Login</button>
         </div>
       </div>
     );
   }
 
-  if (view === 'LOGIN') {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl text-white">
-          <h2 className="text-2xl font-black text-center mb-6">Iniciar Sesión</h2>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Acceder</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === 'BILLING') {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-        <div className="bg-slate-900 border border-indigo-600 p-8 rounded-3xl max-w-md w-full text-center text-white">
-          <h2 className="text-2xl font-black mb-2">Activa tu Suscripción ($5/mes)</h2>
-          <form onSubmit={handleSubscribe} className="space-y-4 text-left mt-4">
-            <input type="text" required placeholder="Titular de la Tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <input type="text" required placeholder="Número de Tarjeta" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Pagar y Entrar</button>
-          </form>
-        </div>
-      </div>
-    );
-  }
+  const currentDmList = currentChannel.type === 'dm' ? (dmMessages[currentChannel.id] || []) : [];
 
   return (
     <div className="flex h-dvh w-screen bg-slate-950 text-white overflow-hidden relative">
       
-      {/* NOTIFICACIÓN DE LLAMADA ENTRANTE */}
+      {/* NOTIFICACIÓN DE LLAMADA ENTRANTE CON AUDIO/TIMBRE */}
       {incomingCall && (
-        <div className="absolute top-4 right-4 z-50 bg-indigo-950 border-2 border-indigo-500 p-4 rounded-2xl shadow-2xl flex items-center space-x-3 animate-bounce">
-          <Bell className="w-7 h-7 text-indigo-400 animate-pulse" />
+        <div className="absolute top-4 right-4 z-50 bg-indigo-950 border-2 border-indigo-500 p-5 rounded-2xl shadow-2xl flex items-center space-x-4 animate-bounce">
+          <Bell className="w-8 h-8 text-indigo-400 animate-pulse" />
           <div>
             <p className="text-xs text-indigo-300 font-bold uppercase">Llamada Entrante</p>
             <p className="text-sm font-bold text-white">{incomingCall.fromUserName} te está llamando...</p>
           </div>
           <div className="flex space-x-2">
-            <button onClick={acceptIncomingCall} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-xl text-xs font-bold">Atender</button>
-            <button onClick={rejectIncomingCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-1.5 rounded-xl text-xs font-bold">Rechazar</button>
+            <button onClick={acceptIncomingCall} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-xl text-xs font-bold">Atender</button>
+            <button onClick={rejectIncomingCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-2 rounded-xl text-xs font-bold">Rechazar</button>
           </div>
         </div>
       )}
 
-      {/* BOTÓN MENÚ MÓVIL */}
+      {/* BOTÓN MÓVIL */}
       <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden absolute top-3 left-3 z-40 bg-indigo-600 p-2.5 rounded-xl text-white shadow-lg">
         {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
       </button>
 
-      {/* Sidebar 100% responsiva */}
+      {/* SIDEBAR */}
       <div className={`fixed md:relative z-30 inset-y-0 left-0 w-72 md:w-80 bg-slate-900 border-r border-slate-800 flex flex-col justify-between transition-transform duration-300 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div>
           <div className="p-4 border-b border-slate-800 bg-slate-950/40">
@@ -486,12 +348,6 @@ export default function App() {
               <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
               <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full">PRO</span>
             </div>
-            {company?.inviteCode && (
-              <div className="bg-slate-950 border border-slate-800 p-2 rounded-xl flex items-center justify-between mt-2">
-                <span className="text-xs font-mono font-bold text-indigo-300">{company.inviteCode}</span>
-                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 text-indigo-300 px-2 py-1 rounded font-bold">Copiar</button>
-              </div>
-            )}
           </div>
 
           <div className="p-4 space-y-1">
@@ -507,7 +363,7 @@ export default function App() {
             ))}
           </div>
 
-          {/* LISTA DE MIEMBROS: MENSAJES PRIVADOS (MP) Y LLAMADAS */}
+          {/* LISTA DE MIEMBROS: MP Y LLAMADAS */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
               <Users className="w-3 h-3 mr-1.5" /> Miembros (Chats Privados & Llamadas)
@@ -544,7 +400,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Panel Central */}
+      {/* PANEL CENTRAL */}
       <div className="flex-1 flex flex-col bg-slate-950 h-full w-full">
         <div className="h-16 border-b border-slate-800 px-4 md:px-6 flex justify-between items-center bg-slate-900/50">
           <span className="text-base md:text-lg font-bold truncate pl-12 md:pl-0">
@@ -563,7 +419,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* CONTENIDO CENTRAL */}
         {isRemoteActive ? (
           <div className="flex-1 bg-black flex flex-col items-center justify-center p-4">
             <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800" />
@@ -582,31 +437,40 @@ export default function App() {
         ) : (
           <>
             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-              {messages.map((m) => (
-                <div key={m.id || Math.random()} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
-                    <div className="flex justify-between items-center mb-1 space-x-4">
-                      <span className="text-xs font-bold text-indigo-400">{m.userName || 'Miembro'}</span>
-                      <span className="text-[10px] text-slate-500">{new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              {currentChannel.type === 'dm' ? (
+                currentDmList.map((m) => (
+                  <div key={m.id} className={`flex ${m.senderId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                    <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
+                      <div className="flex justify-between items-center mb-1 space-x-4">
+                        <span className="text-xs font-bold text-indigo-400">{m.senderName}</span>
+                        <div className="flex items-center space-x-1">
+                          <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          {m.senderId === user?.id && (
+                            m.read ? <CheckCheck className="w-3 h-3 text-indigo-400" /> : <Check className="w-3 h-3 text-slate-500" />
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-sm leading-relaxed">{m.body}</p>
                     </div>
-                    {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
-                    {m.file && (
-                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
-                        <span className="truncate mr-2 font-medium">{m.file.name}</span>
-                        <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                      </a>
-                    )}
                   </div>
-                </div>
-              ))}
+                ))
+              ) : (
+                messages.map((m) => (
+                  <div key={m.id || Math.random()} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                    <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
+                      <div className="flex justify-between items-center mb-1 space-x-4">
+                        <span className="text-xs font-bold text-indigo-400">{m.userName || 'Miembro'}</span>
+                        <span className="text-[10px] text-slate-500">{new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
+                    </div>
+                  </div>
+                ))
+              )}
               <div ref={messagesEndRef} />
             </div>
 
             <form onSubmit={handleSendMessage} className="p-3 md:p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
-              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
-                <Paperclip className="w-5 h-5 text-slate-300" />
-                <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
-              </label>
               <input type="text" placeholder={currentChannel?.type === 'dm' ? `Mensaje privado a ${currentChannel.name}...` : `Escribe en #${currentChannel?.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
               <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
             </form>
