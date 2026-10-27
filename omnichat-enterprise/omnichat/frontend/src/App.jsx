@@ -73,7 +73,7 @@ export default function App() {
       }
     });
 
-    // Cargar mensajes del canal
+    // Cargar mensajes históricos del canal
     fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -89,10 +89,22 @@ export default function App() {
       })
       .catch(() => {});
 
-    // Simular lista de miembros de la empresa conectados
-    setCompanyMembers([
-      { id: user?.id, name: user?.name || 'Tú', role: user?.role || 'owner', online: true }
-    ]);
+    // Obtener la lista real de miembros de la empresa desde el backend
+    fetch(`${API_URL}/api/company/members`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setCompanyMembers(data);
+        } else {
+          // Respaldo si el backend devuelve el usuario actual
+          setCompanyMembers([user]);
+        }
+      })
+      .catch(() => {
+        setCompanyMembers([user]);
+      });
 
     socket.on('message:new', (msg) => {
       if (msg.channelId === currentChannel.id) {
@@ -109,13 +121,13 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Funciones AnyDesk
+  // AnyDesk
   const startRemoteSession = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       setRemoteStream(stream);
       setIsRemoteActive(true);
-      setIsVideoCallActive(false); // Apagar videollamada si se activa remote
+      setIsVideoCallActive(false);
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
       setRemoteId(Math.floor(100000000 + Math.random() * 900000000).toString());
     } catch (err) {
@@ -129,16 +141,16 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
-  // Funciones Videollamada HD Real
+  // Videollamada HD
   const startVideoCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
       setIsVideoCallActive(true);
-      setIsRemoteActive(false); // Apagar remote si se activa videollamada
+      setIsRemoteActive(false);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
     } catch (err) {
-      alert('No se pudo acceder a la cámara o micrófono. Verifica los permisos.');
+      alert('No se pudo acceder a la cámara o micrófono.');
     }
   };
 
@@ -261,11 +273,13 @@ export default function App() {
       return;
     }
 
-    socket.emit('message:send', { channelId: currentChannel.id, body: inputText }, (ack) => {
-      if (ack && ack.error === 'SUBSCRIPTION_REQUIRED') {
-        setView('BILLING');
-      }
-    });
+    if (socket) {
+      socket.emit('message:send', { channelId: currentChannel.id, body: inputText }, (ack) => {
+        if (ack && ack.error === 'SUBSCRIPTION_REQUIRED') {
+          setView('BILLING');
+        }
+      });
+    }
     setInputText('');
   };
 
@@ -391,19 +405,19 @@ export default function App() {
             <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}># Soporte & Operaciones</button>
           </div>
 
-          {/* LISTA DE MIEMBROS CONECTADOS */}
+          {/* LISTA DE MIEMBROS REALES DE LA EMPRESA */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
-              <Users className="w-3 h-3 mr-1.5" /> Miembros en línea
+              <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
             </p>
             <div className="space-y-2 max-h-40 overflow-y-auto">
               {companyMembers.map((m, idx) => (
                 <div key={idx} className="flex items-center justify-between bg-slate-950/60 p-2 rounded-xl border border-slate-800/60 text-xs">
                   <div className="flex items-center space-x-2 truncate">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="font-semibold text-slate-200 truncate">{m.name}</span>
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span className="font-semibold text-slate-200 truncate">{m.name || m.email}</span>
                   </div>
-                  <span className="text-[9px] uppercase bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded font-bold">{m.role}</span>
+                  <span className="text-[9px] uppercase bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded font-bold">{m.role || 'member'}</span>
                 </div>
               ))}
             </div>
@@ -444,7 +458,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* CONTENIDO CENTRAL: ANYDESK, VIDEOLLAMADA O CHAT */}
+        {/* CONTENIDO CENTRAL */}
         {isRemoteActive ? (
           <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
             <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800" />
@@ -460,17 +474,17 @@ export default function App() {
           <>
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               {messages.map((m) => (
-                <div key={m.id} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
-                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md">
+                <div key={m.id || Math.random()} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
                     <div className="flex justify-between items-center mb-1 space-x-4">
-                      <span className="text-xs font-bold text-indigo-400">{m.userName}</span>
-                      <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      <span className="text-xs font-bold text-indigo-400">{m.userName || 'Miembro'}</span>
+                      <span className="text-[10px] text-slate-500">{new Date(m.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
-                    {m.body && <p className="text-sm">{m.body}</p>}
+                    {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
                     {m.file && (
-                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between">
-                        <span className="truncate mr-2">{m.file.name}</span>
-                        <FileText className="w-4 h-4 text-indigo-400" />
+                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
+                        <span className="truncate mr-2 font-medium">{m.file.name}</span>
+                        <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
                       </a>
                     )}
                   </div>
@@ -480,12 +494,12 @@ export default function App() {
             </div>
 
             <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
-              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer border border-slate-700">
+              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
                 <Paperclip className="w-5 h-5 text-slate-300" />
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
               <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold"><Send className="w-5 h-5" /></button>
+              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
             </form>
           </>
         )}
