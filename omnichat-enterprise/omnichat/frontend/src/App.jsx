@@ -27,10 +27,14 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat y WebSockets
+  // Chat y WebSockets (Canales fijos asegurados para evitar que desaparezcan)
   const [socket, setSocket] = useState(null);
-  const [channels, setChannels] = useState([]);
-  const [currentChannel, setCurrentChannel] = useState(null);
+  const [channels, setChannels] = useState([
+    { id: 'general', name: 'General - Empresa' },
+    { id: 'ventas', name: 'Ventas & Comercial' },
+    { id: 'soporte', name: 'Soporte & Operaciones' }
+  ]);
+  const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -64,24 +68,25 @@ export default function App() {
     }
   }, [token, user]);
 
-  // Cargar canales y miembros reales de la empresa al entrar a la app
+  // Cargar canales del servidor y miembros reales de la empresa
   useEffect(() => {
     if (!token || view !== 'APP') return;
 
-    // Obtener canales reales creados en la base de datos de la empresa
+    // Intentar obtener canales del servidor; si el backend devuelve array válido, los usamos
     fetch(`${API_URL}/api/channels`, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data) && data.length > 0) {
-          setChannels(data);
-          setCurrentChannel(data[0]); // Seleccionar el primer canal (General)
+          // Mapear asegurando formato consistente
+          const mapped = data.map(ch => ({ id: ch.id, name: ch.name }));
+          setChannels(mapped);
         }
       })
       .catch(() => {});
 
-    // Obtener miembros reales de la empresa (Emanuel, Romina, etc.)
+    // Sincronizar miembros de la empresa en tiempo real
     const fetchMembers = () => {
       fetch(`${API_URL}/api/company/members`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -100,8 +105,7 @@ export default function App() {
     };
 
     fetchMembers();
-    const interval = setInterval(fetchMembers, 3000); // Sincronizar miembros cada 3s
-
+    const interval = setInterval(fetchMembers, 3000);
     return () => clearInterval(interval);
   }, [token, view]);
 
@@ -435,7 +439,7 @@ export default function App() {
             ))}
           </div>
 
-          {/* LISTA DE MIEMBROS REALES DE LA EMPRESA */}
+          {/* LISTA DE MIEMBROS DE LA EMPRESA (Sincronizado) */}
           <div className="p-4 border-t border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 flex items-center">
               <Users className="w-3 h-3 mr-1.5" /> Miembros de la Empresa
@@ -528,7 +532,7 @@ export default function App() {
                 <Paperclip className="w-5 h-5 text-slate-300" />
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
-              <input type="text" placeholder={`Enviar mensaje a #${currentChannel?.name || 'general'}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <input type="text" placeholder={`Enviar mensaje a #${currentChannel?.name || 'General'}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
               <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
             </form>
           </>
