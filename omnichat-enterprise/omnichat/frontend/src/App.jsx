@@ -36,7 +36,7 @@ export default function App() {
   ]);
   const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa', type: 'channel' });
   const [messages, setMessages] = useState([]);
-  const [dmMessages, setDmMessages] = useState({}); // { recipientId: [ {id, senderId, senderName, body, read, createdAt} ] }
+  const [dmMessages, setDmMessages] = useState({});
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [companyMembers, setCompanyMembers] = useState([]);
@@ -70,7 +70,6 @@ export default function App() {
         setView('APP');
       }
 
-      // Escuchar Mensajes Privados (MP)
       newSocket.on('dm:new', (msg) => {
         setDmMessages(prev => {
           const list = prev[msg.senderId] || [];
@@ -92,7 +91,6 @@ export default function App() {
         });
       });
 
-      // Escuchar Llamadas y WebRTC
       newSocket.on('call:ringing', ({ fromUserId, fromUserName }) => {
         setIncomingCall({ fromUserId, fromUserName });
       });
@@ -121,7 +119,7 @@ export default function App() {
 
       return () => newSocket.close();
     }
-  }, [token, user, currentChannel]);
+  }, [token, user]);
 
   // Cargar canales y miembros
   useEffect(() => {
@@ -146,17 +144,17 @@ export default function App() {
         .then(data => {
           if (Array.isArray(data) && data.length > 0) {
             setCompanyMembers(data);
-          } else {
+          } else if (user) {
             setCompanyMembers([user]);
           }
         })
-        .catch(() => setCompanyMembers([user]));
+        .catch(() => { if (user) setCompanyMembers([user]); });
     };
 
     fetchMembers();
     const interval = setInterval(fetchMembers, 3000);
     return () => clearInterval(interval);
-  }, [token, view]);
+  }, [token, view, user]);
 
   // Manejar cambio de canal público
   useEffect(() => {
@@ -190,7 +188,7 @@ export default function App() {
   }, [messages, dmMessages]);
 
   const openDirectMessage = (member) => {
-    if (member.id === user.id) return;
+    if (!user || member.id === user.id) return;
     setCurrentChannel({
       id: member.id,
       name: member.name || member.email,
@@ -199,7 +197,6 @@ export default function App() {
     setMobileMenuOpen(false);
   };
 
-  // WebRTC Setup para Videollamada HD Real
   const startWebRTC = async (isCaller) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -236,7 +233,7 @@ export default function App() {
   };
 
   const callMember = (member) => {
-    if (member.id === user.id) return alert('No puedes llamarte a ti mismo.');
+    if (!user || member.id === user.id) return alert('No puedes llamarte a ti mismo.');
     setActiveCallUser(member);
     socket.emit('call:start', { targetUserId: member.id });
     alert(`Llamando a ${member.name}...`);
@@ -277,13 +274,74 @@ export default function App() {
     setIsRemoteActive(false);
   };
 
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          name, 
+          email: identifier.toLowerCase().trim(), 
+          password, 
+          companyName: inviteCode ? undefined : companyName,
+          inviteCode: inviteCode ? inviteCode.trim().toUpperCase() : undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setToken(data.token); setUser(data.user); setCompany(data.company);
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('company', JSON.stringify(data.company));
+        setView('APP');
+      } else { alert(data.error || 'Error en el registro.'); }
+    } catch (err) { alert('No se pudo conectar con el servidor.'); }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: identifier.toLowerCase().trim(), password })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setToken(data.token); setUser(data.user); setCompany(data.company);
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('company', JSON.stringify(data.company));
+        setView(data.company?.access?.ok ? 'APP' : 'BILLING');
+      } else { alert(data.error || 'Credenciales inválidas.'); }
+    } catch (err) { alert('Error de autenticación.'); }
+  };
+
+  const handleSubscribe = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/billing/subscribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ holder: cardHolder, cardNumber, exp: cardExp, cvc: cardCvc })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCompany(data.company);
+        localStorage.setItem('company', JSON.stringify(data.company));
+        alert('¡Suscripción activada!'); setView('APP');
+      } else { alert(data.error || 'Error al procesar la tarjeta.'); }
+    } catch (err) { alert('Error de conexión.'); }
+  };
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if ((!inputText.trim() && !selectedFile) || !currentChannel) return;
 
     if (currentChannel.type === 'dm') {
       socket.emit('dm:send', { recipientId: currentChannel.id, body: inputText }, (res) => {
-        if (res.ok) {
+        if (res && res.ok) {
           setDmMessages(prev => {
             const list = prev[currentChannel.id] || [];
             return { ...prev, [currentChannel.id]: [...list, res.msg] };
@@ -315,6 +373,7 @@ export default function App() {
 
   const logout = () => { localStorage.clear(); setToken(''); setUser(null); setCompany(null); setView('LANDING'); };
 
+  // RENDERIZADO SEGURO DE VISTAS EXTERNAS (Evita pantalla en blanco)
   if (view === 'LANDING') {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between">
@@ -324,13 +383,13 @@ export default function App() {
             <span className="text-xl font-bold">OmniChat <span className="text-indigo-400">Enterprise</span></span>
           </div>
           <div className="space-x-4">
-            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900">Iniciar Sesión</button>
-            <button onClick={() => setView('REGISTER')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold">Comenzar Gratis</button>
+            <button onClick={() => setView('LOGIN')} className="px-5 py-2.5 border border-slate-700 rounded-xl text-sm font-medium hover:bg-slate-900 cursor-pointer">Iniciar Sesión</button>
+            <button onClick={() => setView('REGISTER')} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-semibold cursor-pointer">Comenzar Gratis</button>
           </div>
         </header>
         <main className="max-w-5xl mx-auto text-center px-6 py-24">
           <h1 className="text-5xl md:text-6xl font-black">Discord, AnyDesk, Teams y Meet en <span className="text-indigo-400">Una Sola App</span>.</h1>
-          <button onClick={() => setView('REGISTER')} className="mt-10 px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl">Crear Espacio Corporativo</button>
+          <button onClick={() => setView('REGISTER')} className="mt-10 px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl cursor-pointer">Crear Espacio Corporativo</button>
         </main>
       </div>
     );
@@ -347,7 +406,8 @@ export default function App() {
             <input type="text" placeholder="Código de Invitación (Opcional)" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white uppercase font-mono" />
             <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Registrarse</button>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl cursor-pointer">Registrarse</button>
+            <button type="button" onClick={() => setView('LANDING')} className="w-full text-center text-xs text-slate-400 hover:text-white pt-2">Volver al inicio</button>
           </form>
         </div>
       </div>
@@ -362,7 +422,8 @@ export default function App() {
           <form onSubmit={handleLogin} className="space-y-4">
             <input type="email" required placeholder="Correo Electrónico" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <input type="password" required placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Acceder</button>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl cursor-pointer">Acceder</button>
+            <button type="button" onClick={() => setView('LANDING')} className="w-full text-center text-xs text-slate-400 hover:text-white pt-2">Volver al inicio</button>
           </form>
         </div>
       </div>
@@ -377,7 +438,7 @@ export default function App() {
           <form onSubmit={handleSubscribe} className="space-y-4 text-left mt-4">
             <input type="text" required placeholder="Titular de la Tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
             <input type="text" required placeholder="Número de Tarjeta" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white" />
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl">Pagar y Entrar</button>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl cursor-pointer">Pagar y Entrar</button>
           </form>
         </div>
       </div>
@@ -398,14 +459,14 @@ export default function App() {
             <p className="text-sm font-bold text-white">{incomingCall.fromUserName} te está llamando...</p>
           </div>
           <div className="flex space-x-2">
-            <button onClick={acceptIncomingCall} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-xl text-xs font-bold">Atender</button>
-            <button onClick={rejectIncomingCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-2 rounded-xl text-xs font-bold">Rechazar</button>
+            <button onClick={acceptIncomingCall} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer">Atender</button>
+            <button onClick={rejectIncomingCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer">Rechazar</button>
           </div>
         </div>
       )}
 
       {/* BOTÓN MÓVIL */}
-      <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden absolute top-3 left-3 z-40 bg-indigo-600 p-2.5 rounded-xl text-white shadow-lg">
+      <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden absolute top-3 left-3 z-40 bg-indigo-600 p-2.5 rounded-xl text-white shadow-lg cursor-pointer">
         {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
       </button>
 
@@ -420,7 +481,7 @@ export default function App() {
             {company?.inviteCode && (
               <div className="bg-slate-950 border border-slate-800 p-2 rounded-xl flex items-center justify-between mt-2">
                 <span className="text-xs font-mono font-bold text-indigo-300">{company.inviteCode}</span>
-                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 text-indigo-300 px-2 py-1 rounded font-bold">Copiar</button>
+                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 text-indigo-300 px-2 py-1 rounded font-bold cursor-pointer">Copiar</button>
               </div>
             )}
           </div>
@@ -431,7 +492,7 @@ export default function App() {
               <button 
                 key={ch.id} 
                 onClick={() => { setCurrentChannel({ ...ch, type: 'channel' }); setMobileMenuOpen(false); }} 
-                className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel?.id === ch.id && currentChannel?.type !== 'dm' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}
+                className={`w-full text-left p-3 rounded-xl font-bold text-sm transition cursor-pointer ${currentChannel?.id === ch.id && currentChannel?.type !== 'dm' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}
               >
                 # {ch.name}
               </button>
@@ -452,10 +513,10 @@ export default function App() {
                   </div>
                   {m.id !== user?.id && (
                     <div className="flex space-x-1">
-                      <button onClick={() => openDirectMessage(m)} className="p-1.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-400 hover:text-white rounded-lg transition" title="Mensaje Privado">
+                      <button onClick={() => openDirectMessage(m)} className="p-1.5 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-400 hover:text-white rounded-lg transition cursor-pointer" title="Mensaje Privado">
                         <MessageSquare className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => callMember(m)} className="p-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-lg transition" title="Llamar">
+                      <button onClick={() => callMember(m)} className="p-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white rounded-lg transition cursor-pointer" title="Llamar">
                         <PhoneCall className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -471,7 +532,7 @@ export default function App() {
             <p className="text-xs font-bold text-slate-200 truncate">{user?.name}</p>
             <p className="text-[10px] text-slate-500 capitalize">{user?.role}</p>
           </div>
-          <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl" title="Cerrar Sesión"><LogOut className="w-4 h-4" /></button>
+          <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl cursor-pointer" title="Cerrar Sesión"><LogOut className="w-4 h-4" /></button>
         </div>
       </div>
 
@@ -483,19 +544,19 @@ export default function App() {
           </span>
           <div className="flex items-center space-x-2">
             {user?.role === 'owner' && (
-              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700 hidden md:block">Suscripción</button>
+              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700 hidden md:block cursor-pointer">Suscripción</button>
             )}
 
             {!isRemoteActive ? (
-              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center"><Monitor className="w-4 h-4 mr-1 md:mr-2" /> AnyDesk</button>
+              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center cursor-pointer"><Monitor className="w-4 h-4 mr-1 md:mr-2" /> AnyDesk</button>
             ) : (
-              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-1 md:mr-2" /> Salir</button>
+              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center cursor-pointer"><Square className="w-4 h-4 mr-1 md:mr-2" /> Salir</button>
             )}
 
             {!isVideoCallActive ? (
-              <button onClick={() => callMember(companyMembers.find(m => m.id !== user?.id) || companyMembers[0])} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center"><Video className="w-4 h-4 mr-1 md:mr-2" /> Videollamada HD</button>
+              <button onClick={() => callMember(companyMembers.find(m => m.id !== user?.id) || companyMembers[0])} className="bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center cursor-pointer"><Video className="w-4 h-4 mr-1 md:mr-2" /> Videollamada HD</button>
             ) : (
-              <button onClick={hangUpCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center"><Square className="w-4 h-4 mr-1 md:mr-2" /> Colgar</button>
+              <button onClick={hangUpCall} className="bg-rose-600 hover:bg-rose-500 px-3 py-1.5 md:px-4 md:py-2 rounded-xl text-xs md:text-sm font-bold flex items-center cursor-pointer"><Square className="w-4 h-4 mr-1 md:mr-2" /> Colgar</button>
             )}
           </div>
         </div>
@@ -564,7 +625,7 @@ export default function App() {
                 <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
               </label>
               <input type="text" placeholder={currentChannel?.type === 'dm' ? `Mensaje privado a ${currentChannel.name}...` : `Escribe en #${currentChannel?.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition"><Send className="w-5 h-5" /></button>
+              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition cursor-pointer"><Send className="w-5 h-5" /></button>
             </form>
           </>
         )}
