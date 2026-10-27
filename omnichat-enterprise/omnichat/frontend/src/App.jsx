@@ -5,25 +5,33 @@ import {
   Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu
 } from 'lucide-react';
 
-// URL dinámica usando Vite (.env o respaldo directo a Ngrok)
-const API_URL = import.meta.env.VITE_API_URL || 'https://idiom-slashing-barrier.ngrok-free.dev';
+// URL dinámica usando Vite (.env o respaldo directo a Render)
+const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
 const TOKEN_KEY = 'omnichat_token';
 
 export default function App() {
-  const [view, setView] = useState('LANDING'); // LANDING, LOGIN, REGISTER, PRICING, APP
+  const [view, setView] = useState('LANDING'); // LANDING, LOGIN, REGISTER, PRICING, BILLING, APP
   const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY) || '');
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
+  const [company, setCompany] = useState(JSON.parse(localStorage.getItem('company') || 'null'));
 
   // Estados de Formulario de Autenticación
   const [authMode, setAuthMode] = useState('EMAIL'); // EMAIL, PHONE, GOOGLE
+  const [name, setName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [identifier, setIdentifier] = useState(''); // Email o Teléfono
   const [password, setPassword] = useState('');
   const [selectedPlan, setSelectedPlan] = useState('STANDARD');
 
+  // Estados de Facturación / Tarjeta
+  const [cardHolder, setCardHolder] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExp, setCardExp] = useState('');
+  const [cardCvc, setCardCvc] = useState('');
+
   // Estados del Chat y WebSockets
   const [socket, setSocket] = useState(null);
-  const [currentChannel, setCurrentChannel] = useState({ id: 'GENERAL', name: 'General - Empresa' });
+  const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -37,36 +45,60 @@ export default function App() {
         auth: { token }
       });
       setSocket(newSocket);
-      setView('APP');
+      
+      // Si la prueba expiró o requiere pago, redirigir a facturación
+      if (company && company.access && !company.access.ok) {
+        setView('BILLING');
+      } else {
+        setView('APP');
+      }
 
       return () => newSocket.close();
     }
   }, [token, user]);
 
-  // Manejo de salas y canales en tiempo real
+  // Manejo de canales en tiempo real con Socket.io
   useEffect(() => {
-    if (!socket || !user) return;
+    if (!socket || !user || view !== 'APP') return;
 
-    socket.emit('join_project', {
-      projectCode: currentChannel.id,
-      userName: user.email || user.phone,
-      companyName: user.companyName
+    socket.emit('channel:join', currentChannel.id, (res) => {
+      if (res && res.error === 'SUBSCRIPTION_REQUIRED') {
+        setView('BILLING');
+      }
     });
 
-    socket.on('message_history', (history) => setMessages(history));
-    socket.on('receive_message', (msg) => setMessages((prev) => [...prev, msg]));
+    // Cargar mensajes iniciales por API REST
+    fetch(`${API_URL}/api/channels/${currentChannel.id}/messages`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(async (res) => {
+        if (res.status === 402) {
+          setView('BILLING');
+          return [];
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (Array.isArray(data)) setMessages(data);
+      })
+      .catch(() => {});
+
+    socket.on('message:new', (msg) => {
+      if (msg.channelId === currentChannel.id) {
+        setMessages((prev) => [...prev, msg]);
+      }
+    });
 
     return () => {
-      socket.off('message_history');
-      socket.off('receive_message');
+      socket.off('message:new');
     };
-  }, [socket, currentChannel, user]);
+  }, [socket, currentChannel, user, token, view]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // REGISTRO DE EMPRESA / USUARIO
+  // REGISTRO DE EMPRESA / USUARIO (Sin pedir tarjeta)
   const handleRegister = async (e) => {
     e.preventDefault();
     try {
@@ -74,19 +106,20 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          companyName, 
-          identifier, 
+          name, 
+          email: identifier.toLowerCase(), 
           password, 
-          authType: authMode,
-          plan: selectedPlan 
+          companyName 
         })
       });
       const data = await res.json();
       if (res.ok) {
         setToken(data.token);
         setUser(data.user);
+        setCompany(data.company);
         localStorage.setItem(TOKEN_KEY, data.token);
         localStorage.setItem('user', JSON.stringify(data.user));
+        localStorage.setItem('company', JSON.stringify(data.company));
         setView('APP');
       } else {
         alert(data.error || 'Error en el registro.');
@@ -103,15 +136,22 @@ export default function App() {
       const res = await fetch(`${API_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier, password, authType: authMode })
+        body: JSON.stringify({ email: identifier.toLowerCase(), password })
       });
       const data = await res.json();
       if (res.ok) {
         setToken(data.token);
         setUser(data.user);
+        setCompany(data.company);
         localStorage.setItem(TOKEN_KEY, data.token);
         localStorage.setItem('user', JSON.stringify(data.user));
-        setView('APP');
+        localStorage.setItem('company', JSON.stringify(data.company));
+        
+        if (data.company && data.company.access && !data.company.access.ok) {
+          setView('BILLING');
+        } else {
+          setView('APP');
+        }
       } else {
         alert(data.error || 'Credenciales inválidas.');
       }
@@ -120,35 +160,65 @@ export default function App() {
     }
   };
 
+  // ACTIVAR SUSCRIPCIÓN CON TARJETA (POST 14 DÍAS)
+  const handleSubscribe = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/billing/subscribe`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ holder: cardHolder, cardNumber, exp: cardExp, cvc: cardCvc })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCompany(data.company);
+        localStorage.setItem('company', JSON.stringify(data.company));
+        alert('¡Suscripción activada con éxito!');
+        setView('APP');
+      } else {
+        alert(data.error || 'Error al procesar la tarjeta.');
+      }
+    } catch (err) {
+      alert('Error de conexión con la pasarela de pagos.');
+    }
+  };
+
   // ENVÍO DE MENSAJES Y ARCHIVOS
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!inputText.trim() && !selectedFile) return;
 
-    let fileData = null;
     if (selectedFile) {
       const formData = new FormData();
       formData.append('file', selectedFile);
+      if (inputText.trim()) formData.append('body', inputText.trim());
+
       try {
-        const res = await fetch(`${API_URL}/api/upload`, { method: 'POST', body: formData });
-        fileData = await res.json();
+        const res = await fetch(`${API_URL}/api/channels/${currentChannel.id}/files`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+        if (res.status === 402) {
+          setView('BILLING');
+          return;
+        }
+        setSelectedFile(null);
+        setInputText('');
       } catch (err) {
         alert('Error al subir el archivo.');
-        return;
       }
-      setSelectedFile(null);
+      return;
     }
 
-    const payload = {
-      projectCode: currentChannel.id,
-      companyName: user.companyName,
-      sender: user.email || user.phone || 'Usuario',
-      text: inputText,
-      file: fileData,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-
-    socket.emit('send_message', payload);
+    socket.emit('message:send', { channelId: currentChannel.id, body: inputText }, (ack) => {
+      if (ack && ack.error === 'SUBSCRIPTION_REQUIRED') {
+        setView('BILLING');
+      }
+    });
     setInputText('');
   };
 
@@ -156,10 +226,11 @@ export default function App() {
     localStorage.clear();
     setToken('');
     setUser(null);
+    setCompany(null);
     setView('LANDING');
   };
 
-  // 1. LANDING PAGE GLOBAL (PÁGINA DE VENTAS TIPO MICROSOFT TEAMS)
+  // 1. LANDING PAGE GLOBAL
   if (view === 'LANDING') {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
@@ -200,17 +271,16 @@ export default function App() {
     );
   }
 
-  // 2. TABLA DE PRECIOS Y MONETIZACIÓN ($5 USD / MES)
+  // 2. TABLA DE PRECIOS
   if (view === 'PRICING') {
     return (
       <div className="min-h-screen bg-slate-950 text-white p-8 max-w-5xl mx-auto flex flex-col justify-center">
         <div className="text-center mb-12">
           <h2 className="text-4xl font-black">Planes Simples y Transparentes</h2>
-          <p className="text-slate-400 mt-2 text-lg">14 días de prueba gratis en todos los planes. Luego solo $5 USD al mes por usuario.</p>
+          <p className="text-slate-400 mt-2 text-lg">14 días de prueba gratis sin tarjeta de crédito. Luego solo $5 USD al mes.</p>
         </div>
 
         <div className="grid md:grid-cols-2 gap-8 max-w-3xl mx-auto w-full">
-          {/* Plan Estándar Mensual */}
           <div className="bg-slate-900 border-2 border-indigo-600 p-8 rounded-3xl flex flex-col justify-between relative shadow-2xl shadow-indigo-600/20">
             <span className="absolute -top-3.5 left-1/2 transform -translate-x-1/2 bg-indigo-600 text-white font-bold text-xs px-4 py-1 rounded-full uppercase tracking-wider">MÁS POPULAR</span>
             <div>
@@ -223,12 +293,11 @@ export default function App() {
                 <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Aislamiento Multi-Tenant Seguro</li>
               </ul>
             </div>
-            <button onClick={() => { setSelectedPlan('GLOBAL_PRO'); setView('REGISTER'); }} className="mt-8 w-full py-4 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-2xl shadow-lg transition">
+            <button onClick={() => { setSelectedPlan('STANDARD'); setView('REGISTER'); }} className="mt-8 w-full py-4 bg-indigo-600 hover:bg-indigo-500 font-bold rounded-2xl shadow-lg transition">
               Iniciar Prueba de 14 Días
             </button>
           </div>
 
-          {/* Plan Anual o Enterprise */}
           <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl flex flex-col justify-between">
             <div>
               <h3 className="text-2xl font-bold">Enterprise Dedicado</h3>
@@ -248,57 +317,37 @@ export default function App() {
     );
   }
 
-  // 3. REGISTRO MULTIPLATAFORMA (GOOGLE, TELÉFONO, EMAIL) + PASARELA DE PAGO
+  // 3. REGISTRO (Sin tarjeta obligatoria)
   if (view === 'REGISTER') {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
         <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl">
           <h2 className="text-2xl font-black text-center mb-1">Crea tu Espacio Corporativo</h2>
-          <p className="text-center text-xs text-indigo-400 mb-6 font-medium">Incluye 14 días gratis • Luego ${selectedPlan === 'GLOBAL_PRO' ? '5' : '49'} USD/mes</p>
-
-          {/* Selector de Método de Autenticación */}
-          <div className="grid grid-cols-3 gap-2 mb-6 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-            <button onClick={() => setAuthMode('EMAIL')} className={`py-2 text-xs font-bold rounded-lg transition ${authMode === 'EMAIL' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>Email</button>
-            <button onClick={() => setAuthMode('PHONE')} className={`py-2 text-xs font-bold rounded-lg transition ${authMode === 'PHONE' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>Teléfono</button>
-            <button onClick={() => setAuthMode('GOOGLE')} className={`py-2 text-xs font-bold rounded-lg transition ${authMode === 'GOOGLE' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>Google</button>
-          </div>
+          <p className="text-center text-xs text-indigo-400 mb-6 font-medium">14 días de prueba gratis • No requiere tarjeta ahora</p>
 
           <form onSubmit={handleRegister} className="space-y-4">
+            <div>
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Tu Nombre Completo</label>
+              <input type="text" required placeholder="Ej. Juan Pérez" value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+
             <div>
               <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Nombre de la Empresa</label>
               <input type="text" required placeholder="Ej. Global Solutions S.A." value={companyName} onChange={e => setCompanyName(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
             </div>
 
             <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">
-                {authMode === 'PHONE' ? 'Número de Teléfono (WhatsApp / SMS)' : 'Correo Electrónico Corporativo'}
-              </label>
-              <input 
-                type={authMode === 'PHONE' ? 'tel' : 'email'} 
-                required 
-                placeholder={authMode === 'PHONE' ? '+54 9 11 1234-5678' : 'admin@empresa.com'} 
-                value={identifier} 
-                onChange={e => setIdentifier(e.target.value)} 
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" 
-              />
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Correo Electrónico Corporativo</label>
+              <input type="email" required placeholder="admin@empresa.com" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
             </div>
 
-            {authMode !== 'GOOGLE' && (
-              <div>
-                <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Contraseña</label>
-                <input type="password" required placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
-              </div>
-            )}
-
-            <div className="border-t border-slate-800 pt-4 mt-2">
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1 flex items-center">
-                <CreditCard className="w-4 h-4 mr-2 text-indigo-500" /> Tarjeta de Crédito (Activación Suscripción)
-              </label>
-              <input type="text" placeholder="4532 •••• •••• 8892" required className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            <div>
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Contraseña</label>
+              <input type="password" required placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
             </div>
 
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition">
-              Comenzar Prueba y Activar
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition mt-2">
+              Comenzar Prueba Gratis
             </button>
           </form>
 
@@ -318,8 +367,8 @@ export default function App() {
           <h2 className="text-2xl font-black text-center mb-6">Iniciar Sesión</h2>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Email o Teléfono</label>
-              <input type="text" required placeholder="admin@empresa.com o teléfono" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Correo Electrónico</label>
+              <input type="email" required placeholder="admin@empresa.com" value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
             </div>
             <div>
               <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Contraseña</label>
@@ -337,26 +386,69 @@ export default function App() {
     );
   }
 
-  // 5. APLICACIÓN PRINCIPAL DE CHAT EMPRESARIAL (ESTILO TEAMS)
+  // 5. PANTALLA DE FACTURACIÓN / ACTIVACIÓN DE TARJETA (POST 14 DÍAS)
+  if (view === 'BILLING') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="bg-slate-900 border border-indigo-600/50 p-8 rounded-3xl max-w-md w-full shadow-2xl">
+          <div className="text-center mb-6">
+            <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs px-3 py-1 rounded-full font-semibold">PRUEBA GRATUITA FINALIZADA</span>
+            <h2 className="text-2xl font-black mt-3">Activa tu Suscripción</h2>
+            <p className="text-xs text-slate-400 mt-1">Ingresa tus datos de pago para continuar disfrutando de OmniChat Enterprise ($5 USD/mes).</p>
+          </div>
+
+          <form onSubmit={handleSubscribe} className="space-y-4">
+            <div>
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Titular de la Tarjeta</label>
+              <input type="text" required placeholder="Nombre como figura en la tarjeta" value={cardHolder} onChange={e => setCardHolder(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Número de Tarjeta</label>
+              <input type="text" required placeholder="4242 4242 4242 4242" value={cardNumber} onChange={e => setCardNumber(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Vencimiento (MM/YY)</label>
+                <input type="text" required placeholder="12/28" value={cardExp} onChange={e => setCardExp(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs uppercase font-bold text-slate-400 mb-1">CVC</label>
+                <input type="password" required placeholder="123" maxLength="4" value={cardCvc} onChange={e => setCardCvc(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+              </div>
+            </div>
+            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold p-3.5 rounded-xl shadow-lg transition mt-4">
+              Autorizar y Continuar ($5 USD)
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button onClick={logout} className="text-xs text-slate-500 hover:text-slate-300 underline">Cerrar Sesión</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 6. APLICACIÓN PRINCIPAL DE CHAT EMPRESARIAL
   return (
     <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
       {/* Sidebar de Canales y Empresa */}
       <div className="w-80 bg-slate-900 border-r border-slate-800 flex flex-col justify-between">
         <div>
           <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
-            <span className="font-bold text-indigo-400 truncate">{user?.companyName}</span>
+            <span className="font-bold text-indigo-400 truncate">{company?.name || 'Mi Empresa'}</span>
             <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">PRO TRIAL</span>
           </div>
 
           <div className="p-4 space-y-1">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Canales de la Empresa</p>
-            <button onClick={() => setCurrentChannel({ id: 'GENERAL', name: 'General - Empresa' })} className="w-full text-left bg-indigo-600 text-white p-3 rounded-xl font-bold text-sm shadow-md">
+            <button onClick={() => setCurrentChannel({ id: 'general', name: 'General - Empresa' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'general' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
               # General
             </button>
-            <button onClick={() => setCurrentChannel({ id: 'VENTAS', name: 'Equipo de Ventas' })} className="w-full text-left hover:bg-slate-800 text-slate-300 p-3 rounded-xl font-medium text-sm transition">
+            <button onClick={() => setCurrentChannel({ id: 'ventas', name: 'Equipo de Ventas' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'ventas' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
               # Ventas & Comercial
             </button>
-            <button onClick={() => setCurrentChannel({ id: 'SOPORTE', name: 'Soporte Técnico' })} className="w-full text-left hover:bg-slate-800 text-slate-300 p-3 rounded-xl font-medium text-sm transition">
+            <button onClick={() => setCurrentChannel({ id: 'soporte', name: 'Soporte Técnico' })} className={`w-full text-left p-3 rounded-xl font-bold text-sm transition ${currentChannel.id === 'soporte' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
               # Soporte & Operaciones
             </button>
           </div>
@@ -364,8 +456,8 @@ export default function App() {
 
         <div className="p-4 border-t border-slate-800 bg-slate-950/40 flex items-center justify-between">
           <div className="truncate pr-2">
-            <p className="text-xs font-bold text-slate-200 truncate">{user?.email || user?.phone}</p>
-            <p className="text-[10px] text-slate-500">Administrador</p>
+            <p className="text-xs font-bold text-slate-200 truncate">{user?.name || user?.email}</p>
+            <p className="text-[10px] text-slate-500 capitalize">{user?.role || 'Miembro'}</p>
           </div>
           <button onClick={logout} className="p-2 text-rose-400 hover:bg-rose-500/10 rounded-xl transition" title="Cerrar Sesión">
             <LogOut className="w-4 h-4" />
@@ -379,24 +471,31 @@ export default function App() {
           <div className="flex items-center space-x-3">
             <span className="text-lg font-bold">#{currentChannel.name}</span>
           </div>
-          <button onClick={() => alert('Iniciando conferencia segura en vivo...')} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
-            <Video className="w-4 h-4 mr-2" /> Videollamada HD
-          </button>
+          <div className="flex items-center space-x-3">
+            {user?.role === 'owner' && (
+              <button onClick={() => setView('BILLING')} className="bg-slate-800 hover:bg-slate-700 text-indigo-400 px-3 py-2 rounded-xl text-xs font-bold border border-slate-700 transition">
+                Gestionar Suscripción
+              </button>
+            )}
+            <button onClick={() => alert('Iniciando conferencia segura en vivo...')} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
+              <Video className="w-4 h-4 mr-2" /> Videollamada HD
+            </button>
+          </div>
         </div>
 
         {/* Mensajes */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {messages.map((m) => (
-            <div key={m.id} className={`flex ${m.sender === (user?.email || user?.phone) ? 'justify-end' : 'justify-start'}`}>
+            <div key={m.id} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
               <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
                 <div className="flex justify-between items-center mb-1 space-x-4">
-                  <span className="text-xs font-bold text-indigo-400">{m.sender}</span>
-                  <span className="text-[10px] text-slate-500">{m.timestamp}</span>
+                  <span className="text-xs font-bold text-indigo-400">{m.userName}</span>
+                  <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-                {m.text && <p className="text-sm leading-relaxed">{m.text}</p>}
+                {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
                 {m.file && (
-                  <a href={m.file.url} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
-                    <span className="truncate mr-2 font-medium">{m.file.originalName}</span>
+                  <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
+                    <span className="truncate mr-2 font-medium">{m.file.name}</span>
                     <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
                   </a>
                 )}
