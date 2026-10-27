@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import { 
   Building2, Send, Paperclip, Video, FileText, 
-  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Copy
+  Globe, Phone, Mail, Lock, CreditCard, CheckCircle, LogOut, Users, Shield, Cpu, Monitor, Play, Square
 } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://omnichat-backend-t56k.onrender.com';
@@ -29,12 +29,18 @@ export default function App() {
   const [cardExp, setCardExp] = useState('');
   const [cardCvc, setCardCvc] = useState('');
 
-  // Chat y WebSockets
+  // Chat, WebSockets y Escritorio Remoto (AnyDesk Web)
   const [socket, setSocket] = useState(null);
   const [currentChannel, setCurrentChannel] = useState({ id: 'general', name: 'General - Empresa' });
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
+  
+  // Estados para Control Remoto tipo AnyDesk
+  const [isRemoteActive, setIsRemoteActive] = useState(false);
+  const [remoteId, setRemoteId] = useState('');
+  const remoteVideoRef = useRef(null);
+  const [remoteStream, setRemoteStream] = useState(null);
 
   const messagesEndRef = useRef(null);
 
@@ -91,6 +97,30 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Funciones de Control Remoto (AnyDesk Mode)
+  const startRemoteSession = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      setRemoteStream(stream);
+      setIsRemoteActive(true);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      // Generar ID de AnyDesk simulado basado en el usuario
+      setRemoteId(Math.floor(100000000 + Math.random() * 900000000).toString());
+    } catch (err) {
+      alert('No se pudo iniciar la compartición de pantalla para el control remoto.');
+    }
+  };
+
+  const stopRemoteSession = () => {
+    if (remoteStream) {
+      remoteStream.getTracks().forEach(track => track.stop());
+    }
+    setRemoteStream(null);
+    setIsRemoteActive(false);
+  };
 
   const handleRegister = async (e) => {
     e.preventDefault();
@@ -245,7 +275,7 @@ export default function App() {
             Todo tu equipo conectado en <span className="text-indigo-400">Tiempo Real</span>.
           </h1>
           <p className="text-slate-400 mt-6 text-xl max-w-2xl mx-auto font-normal">
-            Mensajería segura por departamentos, canales privados, transferencia de archivos pesados y videollamadas HD para cualquier tipo de empresa.
+            Mensajería segura por departamentos, canales privados, transferencia de archivos pesados y control remoto integrado tipo AnyDesk.
           </p>
           <div className="mt-10 flex justify-center space-x-4">
             <button onClick={() => setView('PRICING')} className="px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-lg rounded-2xl shadow-xl shadow-indigo-600/30 transition">
@@ -278,7 +308,7 @@ export default function App() {
               <ul className="mt-6 space-y-4 text-sm text-slate-300">
                 <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Canales y Departamentos Ilimitados</li>
                 <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Envío de Archivos y Documentos</li>
-                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Videollamadas HD Integradas</li>
+                <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Escritorio Remoto Tipo AnyDesk</li>
                 <li className="flex items-center"><CheckCircle className="w-5 h-5 text-indigo-500 mr-3 flex-shrink-0" /> Aislamiento Multi-Tenant Seguro</li>
               </ul>
             </div>
@@ -325,16 +355,8 @@ export default function App() {
             </div>
 
             <div className="border-t border-b border-slate-800/80 py-3 my-1">
-              <label className="block text-xs uppercase font-bold text-indigo-400 mb-1">
-                ¿Tienes Código de Invitación?
-              </label>
-              <input 
-                type="text" 
-                placeholder="Ingresa el código si te invitaron" 
-                value={inviteCode} 
-                onChange={e => setInviteCode(e.target.value.toUpperCase())} 
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none uppercase tracking-widest font-mono" 
-              />
+              <label className="block text-xs uppercase font-bold text-indigo-400 mb-1">¿Tienes Código de Invitación?</label>
+              <input type="text" placeholder="Ingresa el código si te invitaron" value={inviteCode} onChange={e => setInviteCode(e.target.value.toUpperCase())} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white focus:border-indigo-500 focus:outline-none uppercase tracking-widest font-mono" />
             </div>
 
             <div>
@@ -439,20 +461,13 @@ export default function App() {
               <span className="bg-indigo-500/20 text-indigo-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">PRO TRIAL</span>
             </div>
 
-            {/* MOSTRAR CÓDIGO DE INVITACIÓN */}
             {company?.inviteCode && (
               <div className="bg-slate-950 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between mt-2">
                 <div className="truncate pr-2">
                   <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Código Invitación</p>
                   <p className="text-xs font-mono font-bold text-indigo-300 tracking-widest select-all">{company.inviteCode}</p>
                 </div>
-                <button 
-                  onClick={() => {
-                    navigator.clipboard.writeText(company.inviteCode);
-                    alert('¡Código de invitación copiado al portapapeles!');
-                  }} 
-                  className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold transition flex-shrink-0"
-                >
+                <button onClick={() => { navigator.clipboard.writeText(company.inviteCode); alert('¡Código copiado!'); }} className="text-[10px] bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2.5 py-1.5 rounded-lg font-bold transition flex-shrink-0">
                   Copiar
                 </button>
               </div>
@@ -484,11 +499,11 @@ export default function App() {
         </div>
       </div>
 
-      {/* Panel Central del Chat */}
+      {/* Panel Central: Chat o Escritorio Remoto (AnyDesk Web) */}
       <div className="flex-1 flex flex-col bg-slate-950">
         <div className="h-16 border-b border-slate-800 px-6 flex justify-between items-center bg-slate-900/50">
           <div className="flex items-center space-x-3">
-            <span className="text-lg font-bold">#{currentChannel.name}</span>
+            <span className="text-lg font-bold">{isRemoteActive ? '🖥️ AnyDesk Remoto (ID: ' + remoteId + ')' : '#' + currentChannel.name}</span>
           </div>
           <div className="flex items-center space-x-3">
             {user?.role === 'owner' && (
@@ -496,45 +511,68 @@ export default function App() {
                 Gestionar Suscripción
               </button>
             )}
+
+            {/* BOTÓN ANYDESK INTEGRADO */}
+            {!isRemoteActive ? (
+              <button onClick={startRemoteSession} className="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
+                <Monitor className="w-4 h-4 mr-2" /> Iniciar AnyDesk
+              </button>
+            ) : (
+              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
+                <Square className="w-4 h-4 mr-2" /> Desconectar Remoto
+              </button>
+            )}
+
             <button onClick={() => alert('Iniciando conferencia segura en vivo...')} className="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition">
               <Video className="w-4 h-4 mr-2" /> Videollamada HD
             </button>
           </div>
         </div>
 
-        {/* Mensajes */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.map((m) => (
-            <div key={m.id} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
-              <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
-                <div className="flex justify-between items-center mb-1 space-x-4">
-                  <span className="text-xs font-bold text-indigo-400">{m.userName}</span>
-                  <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-                {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
-                {m.file && (
-                  <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
-                    <span className="truncate mr-2 font-medium">{m.file.name}</span>
-                    <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-                  </a>
-                )}
-              </div>
+        {/* CONTENIDO CENTRAL: SI ESTÁ ACTIVO EL ESCRITORIO REMOTO O EL CHAT */}
+        {isRemoteActive ? (
+          <div className="flex-1 bg-black flex flex-col items-center justify-center p-4 relative">
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-contain rounded-2xl border border-slate-800 shadow-2xl" />
+            <div className="absolute bottom-6 bg-slate-900/90 border border-slate-700 px-6 py-3 rounded-2xl flex items-center space-x-4 shadow-xl">
+              <span className="text-xs font-bold text-emerald-400 flex items-center">● Transmitiendo Sesión Remota</span>
+              <button onClick={stopRemoteSession} className="bg-rose-600 hover:bg-rose-500 text-xs px-3 py-1.5 rounded-xl font-bold transition">Finalizar Control</button>
             </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {messages.map((m) => (
+                <div key={m.id} className={`flex ${m.userId === user?.id ? 'justify-end' : 'justify-start'}`}>
+                  <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl max-w-md shadow-md">
+                    <div className="flex justify-between items-center mb-1 space-x-4">
+                      <span className="text-xs font-bold text-indigo-400">{m.userName}</span>
+                      <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+                    {m.body && <p className="text-sm leading-relaxed">{m.body}</p>}
+                    {m.file && (
+                      <a href={`${API_URL}/api/files/${m.file.id}/download`} target="_blank" rel="noreferrer" className="mt-3 block p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs flex items-center justify-between hover:border-indigo-500 transition">
+                        <span className="truncate mr-2 font-medium">{m.file.name}</span>
+                        <FileText className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
 
-        {/* Input de Mensaje */}
-        <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
-          <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
-            <Paperclip className="w-5 h-5 text-slate-300" />
-            <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
-          </label>
-          <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
-          <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition">
-            <Send className="w-5 h-5" />
-          </button>
-        </form>
+            <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-800 bg-slate-900/80 flex items-center space-x-3">
+              <label className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer transition border border-slate-700">
+                <Paperclip className="w-5 h-5 text-slate-300" />
+                <input type="file" className="hidden" onChange={e => setSelectedFile(e.target.files[0])} />
+              </label>
+              <input type="text" placeholder={`Enviar mensaje a #${currentChannel.name}...`} value={inputText} onChange={e => setInputText(e.target.value)} className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500" />
+              <button type="submit" className="bg-indigo-600 hover:bg-indigo-500 text-white p-3 rounded-xl font-bold shadow-lg transition">
+                <Send className="w-5 h-5" />
+              </button>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );

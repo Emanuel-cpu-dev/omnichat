@@ -1,0 +1,11 @@
+https://github.com/settings/tokens
+
+https://vercel.com/system-b1fc/omnichat/2ynyq7g5b8C2Am3VxXjXSpUcqoYb
+
+https://dashboard.render.com/web/srv-dbg0mhqvcj2c73aq6ki0/deploys/dep-dbg18pkipgvc73e6q2dg?r=2026-10-27%4003%3A02%3A02%7E2026-10-27%4003%3A04%3A35
+
+https://omnichat-hazel.vercel.app/
+
+git add .
+git commit -m 
+git push origin main
